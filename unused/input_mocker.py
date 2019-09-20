@@ -8,7 +8,6 @@ from contextlib import contextmanager
 from typing import List, Union
 
 
-
 class InputMocker:
     """Can be use to replace the 'input()' built-in function so that it returned
     predefined inputs.

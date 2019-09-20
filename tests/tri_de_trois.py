@@ -1,4 +1,4 @@
-from graders.ap1_grader import CodeRunner
+from templates.graders.ap1_grader import CodeRunner
 from itertools import permutations
 
 student_code = """

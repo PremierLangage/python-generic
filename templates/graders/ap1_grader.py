@@ -4,20 +4,20 @@
 #   Quentin Coumes <coumes.quentin@gmail.com>
 #   Antoine Meyer <antoine.meyer@u-pem.fr>
 
+# TODO: separate test result information from feedback formatting
+# TODO: handle exceptions in student code
+# TODO: allow easy / easier translation of feedback
+# TODO: implement fail-fast mechanism
+# TODO: check whether other stuff should be mocked (notably stderr) and possibly
+#  use a new patch-decorated function
+# TODO: implement comparison facilities with trusted code
+
 import sys
-from io import StringIO
-from unittest import mock
-from typing import *
+from contextlib import contextmanager
 from copy import deepcopy
-
-from utils.ap1_utils import mock_input
-
-
-# TODO: separate test results information from feedback formatting
-
-
-def default_cmp(x, y):
-    return x == y
+from io import StringIO
+from typing import NoReturn, List, Any, Callable, Union
+from unittest import mock
 
 
 class Test:
@@ -26,7 +26,7 @@ class Test:
         self.status = status
 
     def __str__(self):
-        msg = "[OK] " if self.status else "[KO] "
+        msg = "<li>[OK] " if self.status else "<li>[KO] "
         return msg + self.title
 
 
@@ -36,12 +36,142 @@ class TestGroup:
         self.tests = []
 
     def __str__(self):
-        res = self.title + '\n'
-        res += "\n".join(str(test) for test in self.tests)
+        res = "\n".join(str(test) for test in self.tests)
+        res = self.title + '\n<ul>\n' + res + "\n</ul>"
         return res
 
     def append(self, test_or_test_group: Union[Test, 'TestGroup']):
         self.tests.append(test_or_test_group)
+
+
+def default_cmp(x, y):
+    return x == y
+
+
+class InputMocker:
+    """Can be use to replace the 'input()' built-in function so that it returned
+    predefined inputs.
+
+    Inputs can either be a list of string (without '\n') or one string (will
+    be split at '\n').
+
+    If verbose is set, InputMocker will act like input() by printing the
+    prompt. It will also print the input as if it was entered by the user.
+
+    Example:
+    >>> input = InputMocker(["Line 1", "Line 2"])
+    >>> input()
+    'Line 1'
+    >>> input()
+    'Line 2'
+    >>> input()
+    Traceback (most recent call last):
+    ...
+    EOFError: No input to be read
+    >>> input = InputMocker("Line 1\\nLine 2")
+    >>> input()
+    'Line 1'
+    >>> input()
+    'Line 2'
+
+    With verbose=True:
+    >>> input = InputMocker(["Line 1", "Line 2", "Line 3"], verbose=True)
+    >>> input("Enter a line: ")
+    Enter a line: Line 1
+    'Line 1'
+    >>> s = input("Enter a line: ")
+    Enter a line: Line 2
+    >>> s
+    'Line 2'
+    >>> input()
+    Line 3
+    'Line 3'
+
+
+    Using eval():
+    >>> context = {'__builtins__': {'input': InputMocker(["Line 1"])}}
+    >>> eval('input()', context)
+    'Line 1'
+
+    Using exec():
+    >>> context = {'__builtins__': {'input': InputMocker(["Line 1"])}}
+    >>> exec("l = input()", context)
+    >>> context['l']
+    'Line 1'
+    """
+
+    def __init__(self, inputs: Union[str, List[str]], verbose: bool = False):
+        if isinstance(inputs, str):
+            inputs = inputs.split('\n')
+        self.inputs = inputs
+        self.verbose = verbose
+
+    def __call__(self, prompt: str = "") -> str:
+        try:
+            in_str = self.inputs.pop(0)
+            if self.verbose:
+                print(prompt + in_str)
+            return in_str
+        except IndexError:
+            raise EOFError("No input to be read")
+
+
+@contextmanager
+def mock_input(inputs: Union[str, List[str]], context=None,
+               verbose: bool = False) -> dict:
+    """Calls to input() done in this context manager will return the given
+    inputs.
+
+    If verbose will be passed to InputMocker.
+
+    Modifies globals() by default, you can provide an optional context to
+    modify it instead so it can be given to exec() or globals().
+
+    The mocking is done by adding / modifying the 'input' key for the
+    duration of the context manager.
+
+    Example (globals() is given because of the way doctest handle it):
+    >>> with mock_input(["Line 1", "Line 2"], globals()):
+    ...     input()
+    ...     input()
+    'Line 1'
+    'Line 2'
+
+    >>> with mock_input("Line 1\\nLine 2", globals()):
+    ...     input()
+    ...     input()
+    'Line 1'
+    'Line 2'
+
+    Using eval():
+    >>> with mock_input(["Line 1"], globals()):
+    ...     eval("input()")
+    'Line 1'
+
+    Using exec():
+    >>> l = None
+    >>> with mock_input(["Line 1"], globals()):
+    ...     exec("l = input()")
+    ...     l
+    'Line 1'
+
+    Using a custom context:
+    >>> with mock_input(["Line 1"], {}) as context:
+    ...     eval("input()", context)
+    'Line 1'
+    """
+    if context is None:
+        context = globals()
+    old_input = context['input'] if 'input' in context else None
+    context['input'] = InputMocker(inputs, verbose)
+
+    try:
+        yield context
+    finally:
+        if old_input is None:
+            del context['input']
+        else:
+            context['input'] = old_input
 
 
 class CodeRunner:
@@ -51,7 +181,7 @@ class CodeRunner:
     Provides methods for code execution, simulating standard input and output
     if necessary and keeping track of global state changes.
     """
-    
+
     def __init__(self, code: str):
         """Build CodeRunner object.
 
@@ -68,7 +198,7 @@ class CodeRunner:
         self.result = None
 
         # history and feedback
-        self.tests = TestGroup("main test group")
+        self.tests = TestGroup("Résultats des tests")
         self.test_group_stack = []
 
     """Setters for execution context."""
@@ -122,8 +252,6 @@ class CodeRunner:
         self.previous_state = deepcopy(self.current_state)
         out_stream = StringIO()
 
-        # TODO: check whether other stuff should be patched and possibly use
-        #  a new patch-decorated function
         with mock_input(self.inputs, self.current_state):
             with mock.patch.object(sys, 'argv', self.argv):
                 with mock.patch.object(sys, 'stdout', out_stream):
@@ -159,7 +287,6 @@ class CodeRunner:
         self.output = out_stream.getvalue()
 
     """Assertions."""
-    # TODO: implement fail-fast mechanism
 
     def assert_output(self, output, _cmp=default_cmp) -> NoReturn:
         status = _cmp(output, self.output)
@@ -193,7 +320,7 @@ class CodeRunner:
             elif not _cmp(value, self.current_state[ident]):
                 incorrect_msg_list.append(
                     "{} has value {} (should be {})".format(
-                        ident, self.current_state[ident], value))
+                        ident, repr(self.current_state[ident]), repr(value)))
 
         msg = "assert_variable_values: "
         msg_list = []
@@ -206,8 +333,9 @@ class CodeRunner:
             status = False
             msg_list.append("; ".join(incorrect_msg_list))
         if status:
-            msg_list.append("; ".join("{} has value {}".format(ident, value)
-                            for ident, value in kwargs.items()))
+            msg_list.append(
+                "; ".join("{} has value {}".format(ident, repr(value))
+                          for ident, value in kwargs.items()))
         msg += "; ".join(msg_list)
 
         self.record_test(Test(msg, status))
@@ -231,38 +359,40 @@ class CodeRunner:
         self.record_test(Test(msg, status))
 
 
-def _main():
-    import textwrap
-
-    code = """
-    def f(n):
-        b = "locale !"
-        return a * n
-    
-    n = input("coucou")
-    print(f(n))
-    """
-    code = textwrap.dedent(code)
-
-    # 1 - create a code runner object
-    runner = CodeRunner(code)
-    # 2 - set execution environment
-    runner.set_globals(a=3)
-    runner.set_inputs(["3"])
-    # 3 - run code in current environment
-    runner.run()
-    # 4 - assert about new state, outputs, etc.
-    runner.assert_output("333\n")
-    runner.assert_variable_values(n="3")
-    # 3' - alternatively, evaluate expressions in current environment
-    # (includes previous changes to global state, input consumption...)
-    runner.evaluate("f(9)")
-    runner.assert_result(27)  # the result of evaluating "f(9)" should be 27
-    runner.assert_no_global_change()  # global variables unchanged
-    # 5 - display test results
-    # TODO: needs work
-    print(runner.tests)
+class GraderError(Exception):
+    pass
 
 
 if __name__ == "__main__":
-    _main()
+    import inspect
+    import sandboxio
+
+    # determine editor's HTML id
+    ex_context = sandboxio.get_context()
+    if "editor" not in ex_context:
+        raise GraderError("Impossible d'identifier le composant CodeEditor "
+                          "dans l'exercice (qui devrait être déclaré dans la "
+                          "variable `editor`). Merci d'utiliser ou de vous "
+                          "inspirer du template ap1_template.pl pour utiliser "
+                          "ce grader.")
+    editor_id = ex_context["editor"].cid
+
+    # determine student code
+    answers = sandboxio.get_answers()
+    student_code = answers[editor_id]["code"]
+
+    # determine validation script
+    validation_script = ex_context["grader"]
+
+    r = CodeRunner(student_code)
+    methods = inspect.getmembers(r, predicate=inspect.ismethod)
+    globals().update(methods)
+
+    try:
+        exec(validation_script, globals())
+    except Exception as e:
+        print("Une erreur s'est produite pendant la validation. Veuillez "
+              "contacter un enseignant.", file=sys.stderr)
+        raise e
+
+    sandboxio.output(0, str(r.tests))
