@@ -10,88 +10,185 @@ from unittest import mock
 from typing import *
 from copy import deepcopy
 
+from utils.ap1_utils import mock_input
 
-class CodeGrader:
-    """Grader for python exercises.
 
-    Receives a single piece of student code. Allows providing reference code
-    for result or side effect comparison, and specifying initial global
-    state.
+class Test:
+    def __init__(self, title: str, status: bool):
+        self.title = title
+        self.status = status
+
+    def __str__(self):
+        msg = "[OK] " if self.status else "[KO] "
+        return msg + self.title
+
+
+class TestGroup:
+    def __init__(self, title: str):
+        self.title = title
+        self.tests = []
+
+    def __str__(self):
+        res = self.title + '\n'
+        res += "\n".join(str(test) for test in self.tests)
+        return res
+
+    def append(self, test_or_test_group: Union[Test, 'TestGroup']):
+        self.tests.append(test_or_test_group)
+
+
+class CodeRunner:
+    """Code runner for Python exercises.
+
+    Instances store a piece of student code.
+    Provides methods for code execution, simulating standard input and output
+    if necessary and keeping track of global state changes.
     """
     
-    def __init__(self, student_code: str,
-                 reference_code: str = None,
-                 initial_context: dict = None):
-        """Build grader object.
+    def __init__(self, code: str):
+        """Build CodeRunner object.
 
-        :param student_code: student code to evaluate.
-        :param reference_code: (optional) reference code for comparison.
-        :param initial_context: (optional) initial global namespace.
+        :param code: student code to evaluate.
         """
-        self.context = deepcopy(initial_context) if initial_context else {}
-        self.student_code = student_code
-        self.reference_code = reference_code
+        self.code = code
 
-        # prepare variable for future global state (after code execution)
-        self.state = None
+        # execution context
+        self.previous_state = None
+        self.current_state = {}
+        self.inputs = []
+        self.argv = []
+        self.output = None
 
-    def exec_preamble(self, preamble):
-        exec(preamble, self.context)
-        del self.context['__builtins__']
+        # history and feedback
+        self.tests = TestGroup("main test group")
+        self.test_group_stack = []
 
-    def exec_with_inputs(self, input_lines: Optional[List[str]] = None):
+    """Setters for execution context."""
+
+    def exec_preamble(self, preamble: str, **kwargs) -> NoReturn:
+        exec(preamble, self.current_state, **kwargs)
+        del self.current_state['__builtins__']
+
+    def set_globals(self, **kwargs) -> NoReturn:
+        self.previous_state = None
+        self.current_state.update(kwargs)
+
+    def set_state(self, state: dict) -> NoReturn:
+        self.previous_state = None
+        self.current_state = state
+
+    def set_argv(self, argv: List[str]) -> NoReturn:
+        self.argv = argv
+
+    def set_inputs(self, inputs: List[str]) -> NoReturn:
+        self.inputs = inputs
+
+    """Feedback management."""
+
+    def begin_test_group(self, title: str) -> NoReturn:
+        tg = TestGroup(title)
+        if self.test_group_stack:
+            self.test_group_stack[-1].append(tg)
+        else:
+            self.tests.append(tg)
+        self.test_group_stack.append(tg)
+
+    def end_test_group(self) -> NoReturn:
+        self.test_group_stack.pop()
+
+    def record_test(self, test: Test) -> NoReturn:
+        if self.test_group_stack:
+            self.test_group_stack[-1].append(test)
+        else:
+            self.tests.append(test)
+
+    """Code execution."""
+
+    def run(self) -> NoReturn:
         """
         Run the student code with the specified lines of input available on
         standard input.
 
-        :param input_lines: Lines of text available on standard input.
-        :return: String printed on standard output.
+        :return: String printed on standard output, modified state.
         """
-        self.state = deepcopy(self.context)
+        self.previous_state = deepcopy(self.current_state)
         out_stream = StringIO()
-        self.state['input'] = lambda _: CodeGrader.my_input(input_lines)
 
         # TODO: check whether other stuff should be patched and possibly use
         #  a new patch-decorated function
-        with mock.patch.object(sys, 'stdout', out_stream):
-            exec(self.student_code, self.state)
-        del self.state['__builtins__']
-        return out_stream.getvalue(), self.state
-
-    def eval_expression(self, expression, input_lines=None):
-        """
-        Evaluate the provided expression in the context of the stundent's code,
-        with the specified lines of input available on standard input.
-
-        :param expression: Expression to be evaluated.
-        :param input_lines: Lines of text available on standard input.
-        :return: tuple containing the expression's value, the string printed on
-        standard output, and the final state.
-        """
-
-        # only execute the whole code if it has never been done
-        # WARNING: assumes the code can be run with no input
-        if self.state is None:
-            self.exec_with_inputs(None)
-
-        # mock the input function
-        self.state['input'] = lambda _: CodeGrader.my_input(input_lines)
-
-        # evaluate the expression mocking stdout printing
-        out_stream = StringIO()
-        with mock.patch.object(sys, 'stdout', out_stream):
-            result = eval(expression, self.state)
+        with mock_input(self.inputs, self.current_state):
+            with mock.patch.object(sys, 'argv', self.argv):
+                with mock.patch.object(sys, 'stdout', out_stream):
+                    exec(self.code, self.current_state)
 
         # cleanup final state for feedback
-        del self.state['__builtins__']
-        return result, out_stream.getvalue(), self.state
+        del self.current_state['__builtins__']
 
-    @staticmethod
-    def my_input(input_lines: List[str]):
-        # TODO: check if it's better to mock sys.stdin directly
-        if not input_lines:
-            raise ValueError("No input to be read.")
-        return input_lines.pop(0)
+        # store generated outputs
+        self.output = out_stream.getvalue()
+
+    def evaluate(self, expression: str) -> Any:
+        """
+        Evaluate the provided expression in the context of the student's code,
+        with the specified lines of input available on standard input.
+
+        :param expression: expression to be evaluated.
+        :return: the expression's value.
+        """
+        self.previous_state = deepcopy(self.current_state)
+        out_stream = StringIO()
+
+        # evaluate the expression mocking sys.argv and stdout printing
+        with mock_input(self.inputs, self.current_state):
+            with mock.patch.object(sys, 'argv', self.argv):
+                with mock.patch.object(sys, 'stdout', out_stream):
+                    result = eval(expression, self.current_state)
+
+        # cleanup final state for feedback
+        del self.current_state['__builtins__']
+
+        # store generated outputs
+        self.output = out_stream.getvalue()
+
+        return result
+
+    """Assertions."""
+    # TODO: implement fail-fast mechanism
+
+    def assert_output(self, output, cmp=None) -> NoReturn:
+        if cmp is None:
+            def cmp(x, y):
+                return x == y
+
+        status = cmp(output, self.output)
+
+        self.record_test(
+            Test(
+                "assert_output: expected {}, got {}".format(
+                    repr(output), repr(self.output)),
+                status
+            )
+        )
+
+    def assert_no_global_change(self) -> NoReturn:
+        modified_vars = [
+            var for var in self.previous_state
+            if var not in self.current_state
+            or self.current_state[var] != self.previous_state[var]]
+
+        modified_vars.extend(self.current_state.keys() -
+                             self.previous_state.keys())
+
+        if modified_vars:
+            msg = "changed variables: {}".format(modified_vars)
+            status = False
+        else:
+            msg = "no changed variables"
+            status = True
+
+        self.record_test(
+            Test("assert_no_global_change: {}".format(msg), status)
+        )
 
 
 def __main():
@@ -106,21 +203,20 @@ def __main():
     print(f(n))
     """
 
-    preamble = """
-    a = 3
-    """
-
     code = textwrap.dedent(code)
-    grader = CodeGrader(code)
 
-    preamble = textwrap.dedent(preamble)
-    grader.exec_preamble(preamble)
+    runner = CodeRunner(code)
 
-    outputs, final_state = grader.exec_with_inputs(["3"])
-    print("La sortie est :", outputs)
-    print(final_state)
+    runner.set_globals(a=3)
+    runner.set_inputs(["3", "4"])
 
-    print(grader.eval_expression("f(9)"))
+    runner.run()
+    print("La sortie est :", runner.output)
+    print(runner.current_state)
+
+    print(runner.evaluate("f(9)"))
+    print("La sortie est :", runner.output)
+    print(runner.current_state)
 
 
 if __name__ == "__main__":
