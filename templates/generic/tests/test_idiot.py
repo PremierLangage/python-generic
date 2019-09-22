@@ -1,4 +1,4 @@
-from templates.graders.ap1_grader import CodeRunner
+from coderunner import CodeRunner
 
 if __name__ == "__main__":
     import textwrap
@@ -30,4 +30,5 @@ if __name__ == "__main__":
     runner.assert_no_global_change()  # global variables unchanged
     # 5 - display test results
     # TODO: needs work
-    print(runner.tests)
+    for test in runner.tests:
+        print(test)

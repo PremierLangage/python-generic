@@ -1,5 +1,6 @@
-from templates.graders.ap1_grader import CodeRunner
+from coderunner import CodeRunner
 from itertools import permutations
+import testfeedback as fb
 
 student_code = """
 if a < b:
@@ -31,29 +32,28 @@ for x, y, z in permutations((1, 2, 3)):
     g.assert_no_global_change()
 g.end_test_group()
 
-"""
-g.begin_test_group("Tris avec un doublon (1/2)")
-for x, y, z in permutations(("un", "un", "deux")):
+g.begin_test_group("Tris avec un doublon et un plus petit")
+for x, y, z in set(permutations(("un", "un", "deux"))):
     g.set_globals(a=x, b=y, c=z)
     g.run()
     g.assert_output("deux un un\n")
     g.assert_no_global_change()
 g.end_test_group()
 
-g.begin_test_group("Tris avec un doublon (2/2)")
-for x, y, z in permutations((1, 2, 2)):
+g.begin_test_group("Tris avec un doublon et un plus grand")
+for x, y, z in set(permutations((1, 1, 2))):
     g.set_globals(a=x, b=y, c=z)
     g.run()
-    g.assert_output("1 2 2\n")
+    g.assert_output("1 1 2\n")
     g.assert_no_global_change()
 g.end_test_group()
 
-g.begin_test_group("Tris de trois valeurs identiques")
+g.begin_test_group("Tri de trois valeurs identiques")
 g.set_globals(a=1, b=1, c=1)
 g.run()
 g.assert_output("1 1 1\n")
 g.assert_no_global_change()
 g.end_test_group()
-"""
 
-print(g.tests)
+for test in g.tests:
+    print(test)
