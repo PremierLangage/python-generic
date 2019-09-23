@@ -56,4 +56,4 @@ g.assert_no_global_change()
 g.end_test_group()
 
 for test in g.tests:
-    print(test)
+    print(test.render())

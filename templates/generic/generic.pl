@@ -22,5 +22,5 @@ form==
 
 # définition de la procédure de validation
 grader==
-return (0, "<l'exercice n'a pas défini de procédure de validation>")
+return (0, "L'exercice n'a pas défini de procédure de validation.")
 ==

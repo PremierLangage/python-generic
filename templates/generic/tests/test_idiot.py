@@ -31,4 +31,4 @@ if __name__ == "__main__":
     # 5 - display test results
     # TODO: needs work
     for test in runner.tests:
-        print(test)
+        print(test.render())

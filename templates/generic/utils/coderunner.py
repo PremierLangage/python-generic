@@ -102,8 +102,13 @@ class CodeRunner:
     def record_test(self, test: fb.TestFeedback) -> NoReturn:
         if self.current_test_group:
             self.current_test_group.append(test)
+            if test.status == fb.FAIL:
+                self.current_test_group.status = fb.FAIL
         else:
             self.tests.append(test)
+
+    def render_tests(self):
+        return "\n".join(test.render() for test in self.tests)
 
     """Code execution."""
 
@@ -209,3 +214,11 @@ class CodeRunner:
         added, deleted, modified, _ = self.summarize_changes()
         status = fb.FAIL if added or deleted or modified else fb.PASS
         self.record_test(fb.NoGlobalChangeTestFeedback(status))
+
+    def assert_no_exception(self):
+        status = self.exception is None
+        self.record_test(fb.NoExceptionTestFeedback(status))
+
+    def assert_exception(self, exception_type):
+        status = isinstance(self.exception, exception_type)
+        self.record_test(fb.ExceptionTestFeedback(status, exception_type))
