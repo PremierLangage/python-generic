@@ -16,7 +16,7 @@
 # print(a, b, c)
 #
 
-extends = ../templates/ap1_template.pl
+extends = ../templates/generic/generic.pl
 title = Tri de trois valeurs
 
 text==
@@ -43,10 +43,32 @@ from itertools import permutations
 
 begin_test_group("Tris d'éléments distincts")
 for x, y, z in permutations((1, 2, 3)):
-    # TODO: display global change in feedback
     set_globals(a=x, b=y, c=z)
-    run()
+    run(title="Exécution avec a = {!r}, b = {!r}, c = {!r}".format(x, y, z))
     assert_output("1 2 3\n")
     assert_no_global_change()
+end_test_group()
+
+begin_test_group("Tris avec un doublon et un plus petit")
+for x, y, z in set(permutations(("un", "un", "deux"))):
+    set_globals(a=x, b=y, c=z)
+    run(title="Exécution avec a = {!r}, b = {!r}, c = {!r}".format(x, y, z))
+    assert_output("deux un un\n")
+    assert_no_global_change()
+end_test_group()
+
+begin_test_group("Tris avec un doublon et un plus grand")
+for x, y, z in set(permutations((1, 1, 2))):
+    set_globals(a=x, b=y, c=z)
+    run(title="Exécution avec a = {!r}, b = {!r}, c = {!r}".format(x, y, z))
+    assert_output("1 1 2\n")
+    assert_no_global_change()
+end_test_group()
+
+begin_test_group("Tri de trois valeurs identiques")
+set_globals(a=1, b=1, c=1)
+run(title="Exécution avec a = {!r}, b = {!r}, c = {!r}".format(x, y, z))
+assert_output("1 1 1\n")
+assert_no_global_change()
 end_test_group()
 ==

@@ -1,6 +1,11 @@
 @ /utils/sandboxio.py
-@ builders/ap1_builder.py [builder.py]
-@ graders/ap1_grader.py [grader.py]
+@ builder.py
+@ grader.py
+@ utils/coderunner.py
+@ utils/testfeedback.py
+@ utils/mockinput.py
+@ utils/testgroup.html
+@ utils/testitem.html
 
 title = <em>(Pas de titre défini)</em>
 text = <em>(Pas d'énoncé défini)</em>
@@ -22,5 +27,6 @@ form==
 
 # définition de la procédure de validation
 grader==
-return (0, "L'exercice n'a pas défini de procédure de validation.")
+begin_test_group("L'exercice n'a pas défini de procédure de validation.")
 ==
+

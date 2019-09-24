@@ -1,6 +1,5 @@
 from coderunner import CodeRunner
 from itertools import permutations
-import testfeedback as fb
 
 student_code = """
 if a < b:
@@ -25,11 +24,9 @@ g = CodeRunner(student_code)
 
 g.begin_test_group("Tris d'éléments distincts")
 for x, y, z in permutations((1, 2, 3)):
-    # TODO: display global change in feedback
-    g.set_globals(a=x, b=y, c=z)
-    g.run()
-    g.assert_output("1 2 3\n")
-    g.assert_no_global_change()
+    g.run(globals={'a': x, 'b': y, 'c': z},
+          output="1 2 3\n",
+          allow_global_change=False)
 g.end_test_group()
 
 g.begin_test_group("Tris avec un doublon et un plus petit")
