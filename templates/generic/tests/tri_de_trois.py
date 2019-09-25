@@ -1,4 +1,4 @@
-from coderunner import CodeRunner
+from test import TestSession
 from itertools import permutations
 
 student_code = """
@@ -20,11 +20,13 @@ else:
             print(c, b, a)
 """
 
-g = CodeRunner(student_code)
+g = TestSession(student_code)
 
 g.begin_test_group("Tris d'éléments distincts")
 for x, y, z in permutations((1, 2, 3)):
-    g.run(globals={'a': x, 'b': y, 'c': z},
+    d = {'a': x, 'b': y, 'c': z}
+    g.run(title="tri avec a, b, c = {}, {}, {}".format(x, y, z),
+          globals=d,
           output="1 2 3\n",
           allow_global_change=False)
 g.end_test_group()
@@ -52,5 +54,4 @@ g.assert_output("1 1 1\n")
 g.assert_no_global_change()
 g.end_test_group()
 
-for test in g.tests:
-    print(test.render())
+print(g.render())

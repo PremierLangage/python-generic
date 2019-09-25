@@ -1,4 +1,4 @@
-from coderunner import CodeRunner
+from test import TestSession
 
 if __name__ == "__main__":
     import textwrap
@@ -14,21 +14,19 @@ if __name__ == "__main__":
     code = textwrap.dedent(code)
 
     # 1 - create a code runner object
-    runner = CodeRunner(code)
+    s = TestSession(code)
     # 2 - set execution environment
-    runner.set_globals(a=3)
-    runner.set_inputs(["3"])
+    s.set_globals(a=3)
+    s.set_inputs(["3"])
     # 3 - run code in current environment
-    runner.run()
+    s.run(values={'n': 4})
     # 4 - assert about new state, outputs, etc.
-    runner.assert_output("333\n")
-    runner.assert_variable_values(n="3")
+    s.assert_output("333\n")
+    s.assert_variable_values(n="3")
     # 3' - alternatively, evaluate expressions in current environment
     # (includes previous changes to global state, input consumption...)
-    runner.evaluate("f(9)")
-    runner.assert_result(27)  # the result of evaluating "f(9)" should be 27
-    runner.assert_no_global_change()  # global variables unchanged
+    s.run("f(9)")
+    s.assert_result(27)  # the result of evaluating "f(9)" should be 27
+    s.assert_no_global_change()  # global variables unchanged
     # 5 - display test results
-    # TODO: needs work
-    for test in runner.tests:
-        print(test.render())
+    print(s.render())
