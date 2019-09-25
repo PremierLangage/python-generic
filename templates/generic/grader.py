@@ -20,16 +20,7 @@
 # FIXME: LaTeX rendering in exercise text does not seem to work
 
 import inspect
-import sys
 import test
-
-
-class GraderError(Exception):
-    pass
-
-
-class StopGrader(Exception):
-    pass
 
 
 def _get_student_code(exercise_context: dict):
@@ -50,12 +41,11 @@ def grade_this(code: str, tests: str):
 
     try:
         exec(tests, namespace)
-    except StopGrader:
+    except test.StopGrader:
         pass
     except Exception as e:
-        print("Une erreur s'est produite pendant la validation. Veuillez "
-              "contacter un enseignant.", file=sys.stderr)
-        raise e
+        return (0, "Une erreur s'est produite pendant la validation. Veuillez "
+                   "contacter un enseignant ({})".format(e))
 
     # return session.get_grade(), session.render()
     return 0, session.render()
