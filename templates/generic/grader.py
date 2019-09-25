@@ -14,6 +14,8 @@
 # TODO: implement plaintext output, markdown rendering...
 # TODO: implement rich formatting of run summary and assertion messages
 #  (including verbatim syntax-highlighted code, console-style <div>s, etc.)
+# TODO: implement grades ! proposal : count the number of passed assertions
+#  vs the total number of assertions (easy). Final grade ? tbd.
 
 # FIXME: LaTeX rendering in exercise text does not seem to work
 
