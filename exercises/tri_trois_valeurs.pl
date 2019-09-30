@@ -60,7 +60,6 @@ for x, y, z in permutations((1, 2, 3)):
 end_test_group()
 
 # Second groupe de tests avec le plus grand élément doublé
-# On utilise ici un style plus compact avec un seul appel
 begin_test_group("Tris de chaînes avec un doublon et un plus petit")
 for x, y, z in set(permutations(("un", "un", "deux"))):
     set_title(f"Exécution avec a = {x}, b = {y}, c = {z}")
