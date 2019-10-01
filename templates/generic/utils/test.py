@@ -1,10 +1,13 @@
+import operator
+import sys
 from copy import deepcopy
 from io import StringIO
-import jinja2
-from mockinput import mock_input
-import sys
-from typing import NoReturn, List, Callable, Union, Optional, Dict, Any
+from typing import Callable, Dict, List, NoReturn, Optional, Union
 from unittest import mock
+
+import jinja2
+
+from mockinput import mock_input
 
 # _default_template_dir = ''
 _default_template_dir = 'templates/generic/jinja/'
@@ -13,7 +16,7 @@ _default_group_template = _default_template_dir + 'testgroup.html'
 
 _default_params = {
     "report_success": False,
-    "fail_fast": True
+    "fail_fast": True,
 }
 
 
@@ -28,8 +31,9 @@ class StopGrader(Exception):
 class Test:
     _number = 0
 
-    def __init__(self, code: str, **params):
+    def __init__(self, code: str, weight: int = 1, **params):
         self.code: str = code
+        self.weight = weight
         self.expression: Optional[str] = None
         self.params = _default_params.copy()
         self.params.update(params)
@@ -54,6 +58,7 @@ class Test:
         self.title: Optional[str] = None
         self.descr: Optional[str] = None
         self.hint: Optional[str] = None
+        self.weight: Optional[int] = 1
 
         # assertions
         self.assertions: List[Assert] = []
@@ -110,7 +115,7 @@ class Test:
                 with mock.patch.object(sys, 'stdout', out_stream):
                     try:
                         if expression is None:
-                            exec(self.code, self.current_state)
+                            exec (self.code, self.current_state)
                         else:
                             self.result = eval(expression, self.current_state)
                     except Exception as e:
@@ -176,22 +181,25 @@ class Test:
         # set hint
         if 'hint' in kwargs:
             self.hint = kwargs['hint']
+        # set weight
+        if 'weight' in kwargs:
+            self.weight = kwargs['weight']
 
     """Assertions."""
 
     def assert_output(self, expected,
-                      cmp: Callable = lambda x, y: x == y):
+                      cmp: Callable = operator.eq):
         status = cmp(expected, self.output)
         self.record_assertion(OutputAssert(status, expected))
         return status
 
     def assert_result(self, expected,
-                      cmp: Callable = lambda x, y: x == y):
+                      cmp: Callable = operator.eq):
         status = cmp(expected, self.result)
         self.record_assertion(ResultAssert(status, expected))
         return status
 
-    def assert_variable_values(self, cmp=lambda x, y: x == y, **expected):
+    def assert_variable_values(self, cmp=operator.eq, **expected):
         if not expected:
             return
         state = self.current_state
@@ -271,6 +279,9 @@ class Test:
         else:
             self.title = "Évaluation de {!r}".format(self.expression)
 
+    def get_grade(self):
+        return (self.status * self.weight), self.weight
+
     def render(self):
         with open(_default_test_template, "r") as tempfile:
             templatestring = tempfile.read()
@@ -284,10 +295,11 @@ class Test:
 class TestGroup:
     _num = 0
 
-    def __init__(self, title: str, **params):
+    def __init__(self, title: str, weight: int = 1, **params):
         self.num: int = TestGroup._num
         TestGroup._num += 1
         self.title: str = title
+        self.weight = weight
         self.status: bool = True
         self.tests: List[Test] = []
         self.params = _default_params.copy()
@@ -298,6 +310,14 @@ class TestGroup:
 
     def make_id(self):
         return 'group_' + str(self.num)
+
+    def get_grade(self):
+        total_grade = total_weight = 0
+        for test in self.tests:
+            total, weight = test.get_grade()
+            total_grade += total
+            total_weight += weight
+        return total_grade / total_weight * self.weight, self.weight
 
     def render(self):
         with open(_default_group_template, "r") as tempfile:
@@ -331,15 +351,28 @@ class TestSession:
         self.current_test_group = None
         self.last_test = None
 
+    """ Grading """
+
+    def get_grade(self):
+        total_grade = total_weight = 0
+        for test in self.history:
+            total, weight = test.get_grade()
+            total_grade += total
+            total_weight += weight
+        return total_grade / total_weight * 100
+
     """Rendering"""
 
     def render(self):
         return "\n".join(test.render() for test in self.history)
 
-    """Setters for next test description."""
+    """Setters for the next test."""
 
     def set_title(self, title):
         self.next_test.title = title
+
+    def set_weight(self, weight):
+        self.next_test.weight = weight
 
     def set_descr(self, descr):
         self.next_test.descr = descr
@@ -350,7 +383,7 @@ class TestSession:
     """Setters for execution context."""
 
     def exec_preamble(self, preamble: str, **kwargs) -> NoReturn:
-        exec(preamble, self.next_test.current_state, **kwargs)
+        exec (preamble, self.next_test.current_state, ** kwargs)
         del self.next_test.current_state['__builtins__']
 
     def set_globals(self, **variables) -> NoReturn:
@@ -383,10 +416,11 @@ class TestSession:
             raise StopGrader("Failed assert during fail-fast test.")
 
     """Assertions."""
+
     # TODO: unhappy about code duplication in assertion mechanism, fix this.
 
     def assert_output(self, expected,
-                      cmp: Callable = lambda x, y: x == y):
+                      cmp: Callable = operator.eq):
         if self.last_test is None:
             raise GraderError("Can't assert before running the code.")
         status = self.last_test.assert_output(expected, cmp)
@@ -395,7 +429,7 @@ class TestSession:
             raise StopGrader("Failed assert during fail-fast test.")
 
     def assert_result(self, expected,
-                      cmp: Callable = lambda x, y: x == y):
+                      cmp: Callable = operator.eq):
         if self.last_test is None:
             raise GraderError("Can't assert before running the code.")
         status = self.last_test.assert_result(expected, cmp)
@@ -437,6 +471,7 @@ class TestSession:
 
 
 class TextLabel:
+
     def __init__(self, text):
         self.text = text
 
@@ -445,6 +480,7 @@ class TextLabel:
 
 
 class Verbatim:
+
     def __init__(self, code):
         self.code = code
 
@@ -464,6 +500,7 @@ class Assert:
 
 
 class OutputAssert(Assert):
+
     def __init__(self, status, expected, **params):
         super().__init__(status, params)
         self.expected = expected
@@ -476,6 +513,7 @@ class OutputAssert(Assert):
 
 
 class NoExceptionAssert(Assert):
+
     def __init__(self, status, **params):
         super().__init__(status, params)
 
@@ -487,6 +525,7 @@ class NoExceptionAssert(Assert):
 
 
 class ExceptionAssert(Assert):
+
     def __init__(self, status, exception: Exception, **params):
         super().__init__(status, params)
         self.exception = exception
@@ -500,6 +539,7 @@ class ExceptionAssert(Assert):
 
 
 class ResultAssert(Assert):
+
     def __init__(self, status, expected, **params):
         super().__init__(status, params)
         self.expected = expected
@@ -512,6 +552,7 @@ class ResultAssert(Assert):
 
 
 class VariableValuesAssert(Assert):
+
     def __init__(self, status, expected, missing, incorrect, **params):
         super().__init__(status, params)
         self.expected = expected
@@ -534,6 +575,7 @@ class VariableValuesAssert(Assert):
 
 
 class NoGlobalChangeAssert(Assert):
+
     def __init__(self, status, **params):
         super().__init__(status, params)
 

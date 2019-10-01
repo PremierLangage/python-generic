@@ -48,7 +48,7 @@ def grade_this(code: str, tests: str):
                    "contacter un enseignant ({})".format(e))
 
     # return session.get_grade(), session.render()
-    return 0, session.render()
+    return session.get_grade(), session.render()
 
 
 if __name__ == "__main__":
