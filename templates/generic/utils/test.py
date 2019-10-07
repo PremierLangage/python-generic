@@ -310,7 +310,7 @@ class Test:
         :return: Assertion status.
         """
         if not expected:
-            return
+            raise ValueError("No expected variable values provided.")
         state = self.current_state
         missing = list(expected.keys() - state.keys())
         incorrect = {var: state[var] for var in expected.keys() & state.keys()
@@ -455,25 +455,62 @@ class Test:
 
 
 class TestGroup:
+    """
+    Groups of Test instances sharing a title.
+
+    Feedback for test groups are supposed to share a <div> and a common
+    description. Groups are intended to clarify the relationships between
+    certain tests.
+    """
     _num = 0
 
     def __init__(self, title: str, weight: int = 1, **params):
+        """
+        Initialize a TestGroup.
+
+        :param title: Title of the test group (required). Try to be as clear
+        as possible.
+        :param weight: Weight in final TestSession grade. The whole groups's
+        grade is multiplied by this factor before being added to other Test
+        and TestGroup grades.
+        :param params: Additional execution parameters such as fail_fast (
+        default: True) and report_success (default: False).
+        """
         self.num: int = TestGroup._num
         TestGroup._num += 1
         self.title: str = title
-        self.weight = weight
+        self.weight: int = weight
         self.status: bool = True
         self.tests: List[Test] = []
         self.params = _default_params.copy()
         self.params.update(params)
 
-    def append(self, test: 'Test'):
+    def append(self, test: 'Test') -> NoReturn:
+        """
+        Append a Test to a TestGroup's history.
+
+        The Test instance to be appended should contain all relevant
+        information for feedback (execution results, assertions, grade, etc.).
+
+        :param test: The Test instance to append.
+        """
         self.tests.append(test)
 
     def make_id(self):
+        """
+        Returns a (TestSession-)unique identifier for the current group.
+
+        :return: Identifier of the form "group_<number>".
+        """
         return 'group_' + str(self.num)
 
     def get_grade(self):
+        """
+        Returns a grade for the current group, normalized to the current
+        group's weight.
+
+        :return: Floating-point grade between 0 and self.weight.
+        """
         total_grade = total_weight = 0
         for test in self.tests:
             total, weight = test.get_grade()
