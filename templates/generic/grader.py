@@ -20,24 +20,26 @@
 # FIXME: LaTeX rendering in exercise text does not seem to work
 
 import inspect
+import sys
 import test
 
 
 def _get_student_code(exercise_context: dict):
     if "editor" not in exercise_context:
-        raise GraderError(missing_editor)
+        raise test.GraderError(missing_editor)
     editor_id = exercise_context["editor"].cid
     answers = sandboxio.get_answers()
     return answers[editor_id]["code"]
 
 
-def grade_this(code: str, tests: str):
+def grade_this(code: str, tests: str, context: dict):
     # instantiate a unique TestSession instance and copy all its bound methods
     # to the global namespace for use in the validation script
     session = test.TestSession(code)
     methods = inspect.getmembers(session, predicate=inspect.ismethod)
     namespace = globals().copy()
     namespace.update(methods)
+    namespace.update({"pl_context": context})
 
     try:
         exec(tests, namespace)
@@ -48,7 +50,7 @@ def grade_this(code: str, tests: str):
                    "contacter un enseignant ({})".format(e))
 
     # return session.get_grade(), session.render()
-    return 0, session.render()
+    return session.getGrade(), session.render()
 
 
 if __name__ == "__main__":
@@ -62,5 +64,5 @@ if __name__ == "__main__":
     context = sandboxio.get_context()
     student_code = _get_student_code(context)
     validation_script = context["grader"]
-    grade, feedback = grade_this(student_code, validation_script)
+    grade, feedback = grade_this(student_code, validation_script, context)
     sandboxio.output(grade, feedback)
