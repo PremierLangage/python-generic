@@ -15,6 +15,7 @@ _default_test_template = _default_template_dir + 'testitem.html'
 _default_group_template = _default_template_dir + 'testgroup.html'
 
 _default_params = {
+    "verbose_inputs": True,
     "report_success": False,
     "fail_fast": True,
 }
@@ -160,7 +161,8 @@ class Test:
         out_stream = StringIO()
 
         # run the code while mocking input, sys.argv and stdout printing
-        with mock_input(self.current_inputs, self.current_state):
+        with mock_input(self.current_inputs, self.current_state,
+                        verbose=self.params['verbose_inputs']):
             with mock.patch.object(sys, 'argv', self.argv):
                 with mock.patch.object(sys, 'stdout', out_stream):
                     try:
@@ -273,6 +275,21 @@ class Test:
 
     """Assertions."""
 
+    @staticmethod
+    def _unidiff_output(expected, actual):
+        """
+        Helper function. Returns a string containing the unified diff of two
+        multiline strings. Thanks https://stackoverflow.com/a/845432/4206331
+        """
+
+        import difflib
+        expected = expected.splitlines(1)
+        actual = actual.splitlines(1)
+        diff = difflib.unified_diff(actual, expected,
+                                    fromfile='Affichage obtenu',
+                                    tofile='Affichage attendu')
+        return ''.join(diff)
+
     def assert_output(self, expected: Any, cmp: Callable = operator.eq) -> bool:
         """
         Assert that the last run's output equals `expected` (using `cmp` as
@@ -283,7 +300,8 @@ class Test:
         :return: Assertion status.
         """
         status = cmp(expected, self.output)
-        self.record_assertion(OutputAssert(status, expected))
+        diff = Test._unidiff_output(expected, self.output)
+        self.record_assertion(OutputAssert(status, diff))
         return status
 
     def assert_result(self, expected: Any, cmp: Callable = operator.eq) -> bool:
@@ -410,7 +428,10 @@ class Test:
         if inputs:
             res.append("Lignes saisies : {}".format(inputs))
         if self.output:
-            res.append("Texte affiché : {!r}".format(self.output))
+            res.append("Texte affiché : "
+                       "<pre style='margin:3pt; padding:2pt; "
+                       "background-color:black; color:white;'>"
+                       "{}</pre>".format(self.output))
         if self.exception:
             res.append("Exception levée : {} ({})".format(
                 type(self.exception).__name__, self.exception))
@@ -496,7 +517,7 @@ class TestGroup:
         """
         self.tests.append(test)
 
-    def make_id(self):
+    def make_id(self) -> str:
         """
         Returns a (TestSession-)unique identifier for the current group.
 
@@ -504,12 +525,12 @@ class TestGroup:
         """
         return 'group_' + str(self.num)
 
-    def get_grade(self):
+    def get_grade(self) -> Tuple[float, int]:
         """
         Returns a grade for the current group, normalized to the current
         group's weight.
 
-        :return: Floating-point grade between 0 and self.weight.
+        :return: Tuple `(g, w)` where `g` is a grade between 0 and `w`.
         """
         total_grade = total_weight = 0
         for test in self.tests:
@@ -518,19 +539,45 @@ class TestGroup:
             total_weight += weight
         return total_grade / total_weight * self.weight, self.weight
 
-    def render(self):
+    def render(self) -> str:
+        """
+        Returns a Jinja2 HTML-formatted description of the TestGroup.
+
+        :return: HTML-formatted report on the test group.
+        """
         with open(_default_group_template, "r") as tempfile:
             templatestring = tempfile.read()
         template = jinja2.Template(templatestring)
         return template.render(testgroup=self)
 
-    def update_status(self, status):
+    def update_status(self, status) -> NoReturn:
+        """
+        Incorporate new test result into test group status.
+
+        :param status: A new test status.
+        """
         self.status = self.status and status
 
 
 class TestSession:
+    """
+    Gather Test or TestGroup instances inside a session.
+
+    TestSession instances manage test succession, group creation and closure,
+    global parameters, and global grading.
+    """
 
     def __init__(self, code: str, **params):
+        """
+        Initialize TestSession instance.
+
+        :param code: Main code to test.
+        :param params: Global session parameters. Currently allowed keys are:
+            - report_success (bool, defaults to False): whether or not to
+              report passed assertions;
+            - fail_fast (bool, defaults to True): whether or not to stop after
+              the first error.
+        """
         self.history: List[Union[Test, TestGroup]] = []
         self.last_test: Optional[Test] = None
         self.next_test: Test = Test(code)
@@ -538,13 +585,21 @@ class TestSession:
         self.params = _default_params.copy()
         self.params.update(params)
 
-    """Feedback management."""
+    """Group management."""
 
     def begin_test_group(self, title: str) -> NoReturn:
+        """
+        Open new test group.
+
+        :param title: New test group's title.
+        """
         self.current_test_group = TestGroup(title)
         self.history.append(self.current_test_group)
 
     def end_test_group(self) -> NoReturn:
+        """
+        Close the current test group.
+        """
         if self.current_test_group and self.last_test:
             self.current_test_group.update_status(self.last_test.status)
         self.current_test_group = None
@@ -708,7 +763,10 @@ class OutputAssert(Assert):
         if self.status:
             return "Affichage correct"
         else:
-            return "Affichage attendu : {!r}".format(self.expected)
+            return ("Affichage attendu :\n"
+                    "<pre style='margin:3pt; padding:2pt; "
+                    "background-color:black; color:white;'>\n"
+                    "{}</pre>".format(self.expected))
 
 
 class NoExceptionAssert(Assert):
