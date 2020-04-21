@@ -15,7 +15,10 @@
 # TODO: check whether cumulative context changes are such a good idea
 # TODO: better feedback appearance
 
+import ast
 import inspect
+import importlib
+import os
 import test
 import traceback
 
@@ -33,9 +36,11 @@ def grade_this(code: str, tests: str, context: dict):
     # to the global namespace for use in the validation script
     session = test.TestSession(code)
     methods = inspect.getmembers(session, predicate=inspect.ismethod)
+
+    # prepare namespace for code execution
     namespace = globals().copy()
     namespace.update(methods)
-    namespace.update({"pl_context": context})
+    namespace["pl_context"] = context
 
     try:
         exec(tests, namespace)
@@ -50,6 +55,11 @@ def grade_this(code: str, tests: str, context: dict):
     return session.get_grade(), session.render()
 
 
+def create_student_file(code: str, modulename: str):
+    with open(modulename + ".py", 'w') as student_file:
+        student_file.write(code)
+
+
 if __name__ == "__main__":
     import sandboxio
 
@@ -60,6 +70,9 @@ if __name__ == "__main__":
 
     pl_context = sandboxio.get_context()
     student_code = _get_student_code(pl_context)
+    student_modulename = "student"
+    create_student_file(student_code, student_modulename)
     validation_script = pl_context["grader"]
-    grade, feedback = grade_this(student_code, validation_script, pl_context)
+    grade, feedback = grade_this(student_code,
+                                 validation_script, pl_context)
     sandboxio.output(grade, feedback)

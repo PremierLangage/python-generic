@@ -1,3 +1,6 @@
+import ast
+import importlib.util
+import inspect
 import operator
 import sys
 from copy import deepcopy
@@ -7,6 +10,7 @@ from unittest import mock
 
 import jinja2
 
+from ast_analyzer import has_no_loop, is_simple_recursive
 from mockinput import mock_input
 
 # _default_template_dir = ''
@@ -108,7 +112,7 @@ class Test:
         :return: tuple `(added, deleted, modified, inputs)`, where:
             - `added` is a dictionary mapping new identifiers to their values;
             - `deleted` is a list of deleted identifiers;
-            - `momdified` is a dictionary mapping existing identifiers to their
+            - `modified` is a dictionary mapping existing identifiers to their
             (new) values;
             - `inputs` is a list of read input lines.
         """
@@ -120,7 +124,8 @@ class Test:
             if self.previous_state[var1] != self.current_state[var1]}
 
         added = {var: self.current_state[var] for var in
-                 self.current_state.keys() - self.previous_state.keys()}
+                 self.current_state.keys() - self.previous_state.keys()
+                 - {'__builtins__'}}
 
         n = len(self.previous_inputs) - len(self.current_inputs)
         inputs = self.previous_inputs[:n]
@@ -153,8 +158,9 @@ class Test:
         # parse context-related keyword arguments
         self.parse_context_args(kwargs)
 
-        # backup starting state
+        # backup and cleanup starting state
         self.previous_state = deepcopy(self.current_state)
+        self.previous_state.pop('__builtins__', None)
         self.previous_inputs = self.current_inputs.copy()
 
         # prepare StringIO for stdout simulation
@@ -174,7 +180,7 @@ class Test:
                         self.exception = e
 
         # cleanup state
-        del self.current_state['__builtins__']
+        # del self.current_state['__builtins__']
 
         # store generated output
         self.output = out_stream.getvalue()
@@ -191,7 +197,8 @@ class Test:
           indeed raised;
         - allow_exception: is exception is None or not passed,
           and 'allow_exception' is either absent or False, forbid exceptions;
-        - values: a disctionary of values whose existence and value to check;
+        - values: a dictionary of values whose existence and value to check;
+        - types: a dictionary of values whose existence and type to check;
         - allow_global_change: if present and False, forbid changes to globals;
         - output: check output (for strict equality for now);
         - result: check evaluation result, fails if no expression is passed.
@@ -212,6 +219,10 @@ class Test:
             # for now we have no facility to check that some variable was
             # deleted, we only check that some variables exist
             self.assert_variable_values(**kwargs['values'])
+        if 'types' in kwargs:
+            # for now we have no facility to check that some variable was
+            # deleted, we only check that some variables exist
+            self.assert_variable_types(**kwargs['types'])
         if ('allow_global_change' in kwargs
                 and not kwargs['allow_global_change']):
             # forbid changes to global variables
@@ -221,7 +232,7 @@ class Test:
             self.assert_output(kwargs['output'])
         # check for evaluation result, only valid if an expression is provided
         if 'result' in kwargs:
-            if 'expression' is None:
+            if self.expression is None:
                 raise GraderError("Vérification du résultat demandée, "
                                   "mais pas d'expression fournie")
             else:
@@ -300,8 +311,9 @@ class Test:
         :return: Assertion status.
         """
         status = cmp(expected, self.output)
-        diff = Test._unidiff_output(expected, self.output)
-        self.record_assertion(OutputAssert(status, diff))
+        # diff = Test._unidiff_output(expected, self.output)
+        # self.record_assertion(OutputAssert(status, diff))
+        self.record_assertion(OutputAssert(status, expected))
         return status
 
     def assert_result(self, expected: Any, cmp: Callable = operator.eq) -> bool:
@@ -339,6 +351,28 @@ class Test:
             VariableValuesAssert(status, expected, missing, incorrect))
         return status
 
+    def assert_variable_types(self, cmp=operator.eq, **expected) -> bool:
+        """
+        Assert that the types of some variables after the last run equal
+        their values in the `expected` dictionary (using `cmp` as comparison
+        operator).
+
+        :param expected: Expected type of the variables.
+        :param cmp: Value comparison function.
+        :return: Assertion status.
+        """
+        if not expected:
+            raise ValueError("No expected variable types provided.")
+        state = self.current_state
+        missing = list(expected.keys() - state.keys())
+        incorrect = {var: state[var] for var in expected.keys() & state.keys()
+                     if not cmp(expected[var], type(state[var]))}
+
+        status = not (missing or incorrect)
+        self.record_assertion(
+            VariableTypesAssert(status, expected, missing, incorrect))
+        return status
+
     def assert_no_global_change(self) -> bool:
         """
         Assert that no global variables changed during the last run.
@@ -370,6 +404,21 @@ class Test:
         status = isinstance(self.exception, exception_type)
         self.record_assertion(
             ExceptionAssert(status, exception_type))
+        return status
+
+    def assert_no_loop(self, funcname: str,
+                       keywords: Tuple[str] = ("for", "while")):
+        func = self.current_state[funcname]
+        print(func, file=sys.stderr)
+        code = inspect.getsource(func)
+        status = has_no_loop(code, keywords)
+        self.record_assertion(NoLoopAssert(status, funcname, keywords))
+        return status
+
+    def assert_simple_recursion(self, funcname: str):
+        func = self.current_state[funcname]
+        status = is_simple_recursive(func)
+        self.record_assertion(SimpleRecursionAssert(status, funcname))
         return status
 
     def record_assertion(self, assertion: 'Assert') -> NoReturn:
@@ -428,10 +477,12 @@ class Test:
         if inputs:
             res.append("Lignes saisies : {}".format(inputs))
         if self.output:
+            tmp = self.output.replace('\n', "↲<br>\n")
+            tmp = tmp.replace(' ', '⎵')
             res.append("Texte affiché : "
                        "<pre style='margin:3pt; padding:2pt; "
                        "background-color:black; color:white;'>"
-                       "{}</pre>".format(self.output))
+                       "{}</pre>".format(tmp))
         if self.exception:
             res.append("Exception levée : {} ({})".format(
                 type(self.exception).__name__, self.exception))
@@ -582,6 +633,18 @@ class TestSession:
         self.last_test: Optional[Test] = None
         self.next_test: Test = Test(code)
         self.current_test_group: Optional[TestGroup] = None
+
+        self.ast: ast.AST = ast.parse(code)
+
+        # modname = 'studentmod'
+        # spec = importlib.util.spec_from_loader(modname, loader=None)
+        # module = importlib.util.module_from_spec(spec)
+        # exec(code, module.__dict__)
+        # sys.modules[modname] = module
+        # self.module = module
+
+        self.module = importlib.import_module('student')
+
         self.params = _default_params.copy()
         self.params.update(params)
 
@@ -638,7 +701,7 @@ class TestSession:
 
     def exec_preamble(self, preamble: str, **kwargs) -> NoReturn:
         exec(preamble, self.next_test.current_state, ** kwargs)
-        del self.next_test.current_state['__builtins__']
+        # del self.next_test.current_state['__builtins__']
 
     def set_globals(self, **variables) -> NoReturn:
         self.next_test.current_state = variables
@@ -699,6 +762,14 @@ class TestSession:
             self.end_test_group()
             raise StopGrader("Failed assert during fail-fast test.")
 
+    def assert_variable_types(self, cmp=lambda x, y: x == y, **expected):
+        if self.last_test is None:
+            raise GraderError("Can't assert before running the code.")
+        status = self.last_test.assert_variable_types(cmp, **expected)
+        if self.params.get('fail_fast', False) and not status:
+            self.end_test_group()
+            raise StopGrader("Failed assert during fail-fast test.")
+
     def assert_no_global_change(self):
         if self.last_test is None:
             raise GraderError("Can't assert before running the code.")
@@ -719,6 +790,22 @@ class TestSession:
         if self.last_test is None:
             raise GraderError("Can't assert before running the code.")
         status = self.last_test.assert_exception(exception_type)
+        if self.params.get('fail_fast', False) and not status:
+            self.end_test_group()
+            raise StopGrader("Failed assert during fail-fast test.")
+
+    def assert_no_loop(self, funcname, keywords=("while", "for")):
+        if self.last_test is None:
+            raise GraderError("Can't assert before running the code.")
+        status = self.last_test.assert_no_loop(funcname, keywords)
+        if self.params.get('fail_fast', False) and not status:
+            self.end_test_group()
+            raise StopGrader("Failed assert during fail-fast test.")
+
+    def assert_simple_recursion(self, funcname):
+        if self.last_test is None:
+            raise GraderError("Can't assert before running the code.")
+        status = self.last_test.assert_simple_recursion(funcname)
         if self.params.get('fail_fast', False) and not status:
             self.end_test_group()
             raise StopGrader("Failed assert during fail-fast test.")
@@ -762,11 +849,15 @@ class OutputAssert(Assert):
     def __str__(self):
         if self.status:
             return "Affichage correct"
+        elif self.expected == "":
+            return "Aucun affichage attendu"
         else:
+            tmp = self.expected.replace('\n', "↲\n")
+            tmp = tmp.replace(' ', '⎵')
             return ("Affichage attendu :\n"
                     "<pre style='margin:3pt; padding:2pt; "
                     "background-color:black; color:white;'>\n"
-                    "{}</pre>".format(self.expected))
+                    "{}</pre>".format(tmp))
 
 
 class NoExceptionAssert(Assert):
@@ -831,6 +922,29 @@ class VariableValuesAssert(Assert):
         return res
 
 
+class VariableTypesAssert(Assert):
+
+    def __init__(self, status, expected, missing, incorrect, **params):
+        super().__init__(status, params)
+        self.expected = expected
+        self.missing = missing
+        self.incorrect = incorrect
+
+    def __str__(self):
+        if self.status:
+            res = "Variables globales correctes"
+        else:
+            res = "Variables globales incorrectes : "
+            details = []
+            for var in self.missing:
+                details.append("{} manquante".format(var))
+            for var in self.incorrect:
+                details.append("{} devrait être de type {!r}".format(
+                    var, self.expected[var]))
+            res += "; ".join(details)
+        return res
+
+
 class NoGlobalChangeAssert(Assert):
 
     def __init__(self, status, **params):
@@ -841,3 +955,33 @@ class NoGlobalChangeAssert(Assert):
             return "Variables globales inchangées"
         else:
             return "Variables globales modifiées"
+
+
+class NoLoopAssert(Assert):
+
+    def __init__(self, status: bool, funcname: str, keywords: Tuple[str],
+                 **params):
+        super().__init__(status, params)
+        self.funcname = funcname
+        self.keywords = keywords
+
+    def __str__(self):
+        if self.status:
+            kw = " ou ".join(self.keywords)
+            return f"Pas de boucle {kw} dans la fonction {self.funcname}"
+        else:
+            kw = " ou ".join(self.keywords)
+            return f"Boucle {kw} dans la fonction {self.funcname}"
+
+
+class SimpleRecursionAssert(Assert):
+
+    def __init__(self, status, funcname, **params):
+        super().__init__(status, params)
+        self.funcname = funcname
+
+    def __str__(self):
+        if self.status:
+            return f"La fonction {self.funcname} est simplement récursive"
+        else:
+            return f"La fonction {self.funcname} n'est pas simplement récursive"

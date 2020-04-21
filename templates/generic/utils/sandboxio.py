@@ -3,6 +3,7 @@
 import sys, json, jsonpickle
 from components import Component
 
+
 def get_answers():
     """Return a dictionnary containing every answer."""
     with open(sys.argv[2], "r") as f:

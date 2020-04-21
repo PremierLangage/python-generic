@@ -30,5 +30,5 @@ assert_no_global_change()  # global variables unchanged
 
 
 if __name__ == "__main__":
-    grade, fb = grade_this(student_code, validation_code)
+    grade, fb = grade_this(student_code, validation_code, globals())
     print(fb)
