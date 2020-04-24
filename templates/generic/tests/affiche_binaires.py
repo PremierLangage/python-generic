@@ -41,14 +41,14 @@ run(title='Respect des consignes',
     output='',
     types={"affiche_binaires_prefixe":FunctionType})
 assert_no_loop("affiche_binaires_prefixe")
-assert_simple_recursion("affiche_binaires_prefixe")
+assert_recursion("affiche_binaires_prefixe(3, '')")
 
-run(f'affiche_binaires_prefix(3, "000")', 
+run('affiche_binaires_prefixe(3, "000")', 
     title = f'Chaînes binaires de longueur 3 et de préfixe "000"',
     result = None,
     output = '000\n')
 
-run(f'affiche_binaires_prefix(3, "0")', 
+run('affiche_binaires_prefixe(3, "0")', 
     title = f'Chaînes binaires de longueur 3 et de préfixe "0"',
     result = None,
     output = chaines_binaires_aux(3, "0"))

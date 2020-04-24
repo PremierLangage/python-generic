@@ -1,17 +1,15 @@
-import ast
-import importlib.util
 import inspect
+import jinja2
 import operator
 import sys
+
+from ast_analyzer import AstAnalyzer
 from copy import deepcopy
 from io import StringIO
+from mockinput import mock_input
+from recursion_detector import performs_recursion
 from typing import Callable, Dict, List, NoReturn, Optional, Union, Any, Tuple
 from unittest import mock
-
-import jinja2
-
-from ast_analyzer import has_no_loop, is_simple_recursive
-from mockinput import mock_input
 
 # _default_template_dir = ''
 _default_template_dir = 'templates/generic/jinja/'
@@ -37,6 +35,217 @@ class StopGrader(Exception):
     pass
 
 
+class TestSession:
+    """
+    Gather Test or TestGroup instances inside a session.
+
+    TestSession instances manage test succession, group creation and closure,
+    global parameters, and global grading.
+    """
+
+    def __init__(self, code: str, **params):
+        """
+        Initialize TestSession instance.
+
+        :param code: Main code to test.
+        :param params: Global session parameters. Currently allowed keys are:
+            - report_success (bool, defaults to False): whether or not to
+              report passed assertions;
+            - fail_fast (bool, defaults to True): whether or not to stop after
+              the first error.
+        """
+        self.history: List[Union[Test, TestGroup]] = []
+        self.last_test: Optional[Test] = None
+        self.current_test: Optional[Test] = None
+        self.current_test_group: Optional[TestGroup] = None
+        self.analyzer: Optional[AstAnalyzer] = None
+        self.code = code
+
+        # modname = 'studentmod'
+        # spec = importlib.util.spec_from_loader(modname, loader=None)
+        # module = importlib.util.module_from_spec(spec)
+        # exec(code, module.__dict__)
+        # sys.modules[modname] = module
+
+        # self.module = module
+        # self.module = importlib.import_module('student')
+
+        self.params = _default_params.copy()
+        self.params.update(params)
+
+    """Group management."""
+
+    def begin_test_group(self, title: str) -> NoReturn:
+        """
+        Open new test group.
+
+        :param title: New test group's title.
+        """
+        self.current_test_group = TestGroup(title)
+        self.history.append(self.current_test_group)
+
+    def end_test_group(self) -> NoReturn:
+        """
+        Close the current test group.
+        """
+        if self.current_test_group and self.last_test:
+            self.current_test_group.update_status(self.last_test.status)
+        self.current_test_group = None
+        self.last_test = None
+
+    """ Grading """
+
+    def get_grade(self):
+        total_grade = total_weight = 0
+        for test in self.history:
+            total, weight = test.get_grade()
+            total_grade += total
+            total_weight += weight
+        return total_grade / total_weight * 100
+
+    """Rendering"""
+
+    def render(self):
+        return "\n".join(test.render() for test in self.history)
+
+    """Getters."""
+
+    def get_analyzer(self):
+        if self.analyzer is None:
+            self.analyzer = AstAnalyzer(self.code)
+        return self.analyzer
+
+    """Setters for the next test."""
+
+    def set_title(self, title):
+        self.current_test.title = title
+
+    def set_weight(self, weight):
+        self.current_test.weight = weight
+
+    def set_descr(self, descr):
+        self.current_test.descr = descr
+
+    def set_hint(self, hint):
+        self.current_test.hint = hint
+
+    """Setters for execution context."""
+
+    def exec_preamble(self, preamble: str, **kwargs) -> NoReturn:
+        exec(preamble, self.current_test.current_state, ** kwargs)
+        # del self.next_test.current_state['__builtins__']
+
+    def set_globals(self, **variables) -> NoReturn:
+        self.current_test.current_state = variables
+
+    def set_state(self, state: dict) -> NoReturn:
+        self.current_test.current_state = state
+
+    def set_argv(self, argv: List[str]) -> NoReturn:
+        self.current_test.argv = argv.copy()
+
+    def set_inputs(self, inputs: List[str]) -> NoReturn:
+        self.current_test.current_inputs = inputs.copy()
+
+    """Execution"""
+
+    def run(self, expression: str = None, **kwargs) -> NoReturn:
+        if self.current_test is None:
+            self.current_test = Test(self)
+
+        self.current_test.run(expression, **kwargs)
+        self.last_test = self.current_test
+        self.current_test = self.last_test.copy()
+
+        # record last test
+        if self.current_test_group:
+            self.current_test_group.append(self.last_test)
+            self.current_test_group.update_status(self.last_test.status)
+        else:
+            self.history.append(self.last_test)
+
+        if self.params.get('fail_fast', False) and not self.last_test.status:
+            raise StopGrader("Failed assert during fail-fast test.")
+
+    """Assertions."""
+
+    # TODO: unhappy about code duplication in assertion mechanism, fix this.
+
+    def assert_output(self, expected,
+                      cmp: Callable = operator.eq):
+        if self.last_test is None:
+            raise GraderError("Can't assert before running the code.")
+        status = self.last_test.assert_output(expected, cmp)
+        if self.params.get('fail_fast', False) and not status:
+            self.end_test_group()
+            raise StopGrader("Failed assert during fail-fast test.")
+
+    def assert_result(self, expected,
+                      cmp: Callable = operator.eq):
+        if self.last_test is None:
+            raise GraderError("Can't assert before running the code.")
+        status = self.last_test.assert_result(expected, cmp)
+        if self.params.get('fail_fast', False) and not status:
+            self.end_test_group()
+            raise StopGrader("Failed assert during fail-fast test.")
+
+    def assert_variable_values(self, cmp=lambda x, y: x == y, **expected):
+        if self.last_test is None:
+            raise GraderError("Can't assert before running the code.")
+        status = self.last_test.assert_variable_values(cmp, **expected)
+        if self.params.get('fail_fast', False) and not status:
+            self.end_test_group()
+            raise StopGrader("Failed assert during fail-fast test.")
+
+    def assert_variable_types(self, cmp=lambda x, y: x == y, **expected):
+        if self.last_test is None:
+            raise GraderError("Can't assert before running the code.")
+        status = self.last_test.assert_variable_types(cmp, **expected)
+        if self.params.get('fail_fast', False) and not status:
+            self.end_test_group()
+            raise StopGrader("Failed assert during fail-fast test.")
+
+    def assert_no_global_change(self):
+        if self.last_test is None:
+            raise GraderError("Can't assert before running the code.")
+        status = self.last_test.assert_no_global_change()
+        if self.params.get('fail_fast', False) and not status:
+            self.end_test_group()
+            raise StopGrader("Failed assert during fail-fast test.")
+
+    def assert_no_exception(self, **params):
+        if self.last_test is None:
+            raise GraderError("Can't assert before running the code.")
+        status = self.last_test.assert_no_exception(**params)
+        if self.params.get('fail_fast', False) and not status:
+            self.end_test_group()
+            raise StopGrader("Failed assert during fail-fast test.")
+
+    def assert_exception(self, exception_type):
+        if self.last_test is None:
+            raise GraderError("Can't assert before running the code.")
+        status = self.last_test.assert_exception(exception_type)
+        if self.params.get('fail_fast', False) and not status:
+            self.end_test_group()
+            raise StopGrader("Failed assert during fail-fast test.")
+
+    def assert_no_loop(self, funcname, keywords=("while", "for")):
+        if self.last_test is None:
+            raise GraderError("Can't assert before running the code.")
+        status = self.last_test.assert_no_loop(funcname, keywords)
+        if self.params.get('fail_fast', False) and not status:
+            self.end_test_group()
+            raise StopGrader("Failed assert during fail-fast test.")
+
+    def assert_recursion(self, expr):
+        if self.last_test is None:
+            raise GraderError("Can't assert before running the code.")
+        status = self.last_test.assert_recursion(expr)
+        if self.params.get('fail_fast', False) and not status:
+            self.end_test_group()
+            raise StopGrader("Failed assert during fail-fast test.")
+
+
 class Test:
     """
     Test runner. Manages code to be run, execution context, effects,
@@ -44,7 +253,7 @@ class Test:
     """
     _number: int = 0  # Test rank in session.
 
-    def __init__(self, code: str, weight: int = 1, **params):
+    def __init__(self, session: TestSession, weight: int = 1, **params):
         """Test instance initializaton.
 
         :param code: Code to test.
@@ -54,7 +263,7 @@ class Test:
             - report_success (bool): whether or not to report passed assertions;
             - fail_fast (bool): whether or not to stop after the first error.
         """
-        self.code: str = code
+        self.session: TestSession = session
         self.weight = weight
         self.expression: Optional[str] = None
         self.params = _default_params.copy()
@@ -95,7 +304,7 @@ class Test:
 
         :return: historyless copy of the current test instance.
         """
-        t = Test(self.code)
+        t = Test(self.session)
         t.current_state = deepcopy(self.current_state)
         t.current_inputs = self.current_inputs.copy()
         t.argv = self.argv.copy()
@@ -173,7 +382,7 @@ class Test:
                 with mock.patch.object(sys, 'stdout', out_stream):
                     try:
                         if expression is None:
-                            exec(self.code, self.current_state)
+                            exec(self.session.code, self.current_state)
                         else:
                             self.result = eval(expression, self.current_state)
                     except Exception as e:
@@ -408,17 +617,15 @@ class Test:
 
     def assert_no_loop(self, funcname: str,
                        keywords: Tuple[str] = ("for", "while")):
-        func = self.current_state[funcname]
-        print(func, file=sys.stderr)
-        code = inspect.getsource(func)
-        status = has_no_loop(code, keywords)
+        analyzer = self.session.get_analyzer()
+        status = not analyzer.has_loop(funcname)
         self.record_assertion(NoLoopAssert(status, funcname, keywords))
         return status
 
-    def assert_simple_recursion(self, funcname: str):
-        func = self.current_state[funcname]
-        status = is_simple_recursive(func)
-        self.record_assertion(SimpleRecursionAssert(status, funcname))
+    def assert_recursion(self, expr: str):
+        call = eval("lambda: " + expr, self.current_state)
+        status = performs_recursion(call)
+        self.record_assertion(RecursionAssert(status, expr))
         return status
 
     def record_assertion(self, assertion: 'Assert') -> NoReturn:
@@ -610,207 +817,6 @@ class TestGroup:
         self.status = self.status and status
 
 
-class TestSession:
-    """
-    Gather Test or TestGroup instances inside a session.
-
-    TestSession instances manage test succession, group creation and closure,
-    global parameters, and global grading.
-    """
-
-    def __init__(self, code: str, **params):
-        """
-        Initialize TestSession instance.
-
-        :param code: Main code to test.
-        :param params: Global session parameters. Currently allowed keys are:
-            - report_success (bool, defaults to False): whether or not to
-              report passed assertions;
-            - fail_fast (bool, defaults to True): whether or not to stop after
-              the first error.
-        """
-        self.history: List[Union[Test, TestGroup]] = []
-        self.last_test: Optional[Test] = None
-        self.next_test: Test = Test(code)
-        self.current_test_group: Optional[TestGroup] = None
-
-        self.ast: ast.AST = ast.parse(code)
-
-        # modname = 'studentmod'
-        # spec = importlib.util.spec_from_loader(modname, loader=None)
-        # module = importlib.util.module_from_spec(spec)
-        # exec(code, module.__dict__)
-        # sys.modules[modname] = module
-        # self.module = module
-
-        self.module = importlib.import_module('student')
-
-        self.params = _default_params.copy()
-        self.params.update(params)
-
-    """Group management."""
-
-    def begin_test_group(self, title: str) -> NoReturn:
-        """
-        Open new test group.
-
-        :param title: New test group's title.
-        """
-        self.current_test_group = TestGroup(title)
-        self.history.append(self.current_test_group)
-
-    def end_test_group(self) -> NoReturn:
-        """
-        Close the current test group.
-        """
-        if self.current_test_group and self.last_test:
-            self.current_test_group.update_status(self.last_test.status)
-        self.current_test_group = None
-        self.last_test = None
-
-    """ Grading """
-
-    def get_grade(self):
-        total_grade = total_weight = 0
-        for test in self.history:
-            total, weight = test.get_grade()
-            total_grade += total
-            total_weight += weight
-        return total_grade / total_weight * 100
-
-    """Rendering"""
-
-    def render(self):
-        return "\n".join(test.render() for test in self.history)
-
-    """Setters for the next test."""
-
-    def set_title(self, title):
-        self.next_test.title = title
-
-    def set_weight(self, weight):
-        self.next_test.weight = weight
-
-    def set_descr(self, descr):
-        self.next_test.descr = descr
-
-    def set_hint(self, hint):
-        self.next_test.hint = hint
-
-    """Setters for execution context."""
-
-    def exec_preamble(self, preamble: str, **kwargs) -> NoReturn:
-        exec(preamble, self.next_test.current_state, ** kwargs)
-        # del self.next_test.current_state['__builtins__']
-
-    def set_globals(self, **variables) -> NoReturn:
-        self.next_test.current_state = variables
-
-    def set_state(self, state: dict) -> NoReturn:
-        self.next_test.current_state = state
-
-    def set_argv(self, argv: List[str]) -> NoReturn:
-        self.next_test.argv = argv.copy()
-
-    def set_inputs(self, inputs: List[str]) -> NoReturn:
-        self.next_test.current_inputs = inputs.copy()
-
-    """Execution"""
-
-    def run(self, expression: str = None, **kwargs) -> NoReturn:
-        self.next_test.run(expression, **kwargs)
-        self.last_test = self.next_test
-        self.next_test = self.last_test.copy()
-
-        # record last test
-        if self.current_test_group:
-            self.current_test_group.append(self.last_test)
-            self.current_test_group.update_status(self.last_test.status)
-        else:
-            self.history.append(self.last_test)
-
-        if self.params.get('fail_fast', False) and not self.last_test.status:
-            raise StopGrader("Failed assert during fail-fast test.")
-
-    """Assertions."""
-
-    # TODO: unhappy about code duplication in assertion mechanism, fix this.
-
-    def assert_output(self, expected,
-                      cmp: Callable = operator.eq):
-        if self.last_test is None:
-            raise GraderError("Can't assert before running the code.")
-        status = self.last_test.assert_output(expected, cmp)
-        if self.params.get('fail_fast', False) and not status:
-            self.end_test_group()
-            raise StopGrader("Failed assert during fail-fast test.")
-
-    def assert_result(self, expected,
-                      cmp: Callable = operator.eq):
-        if self.last_test is None:
-            raise GraderError("Can't assert before running the code.")
-        status = self.last_test.assert_result(expected, cmp)
-        if self.params.get('fail_fast', False) and not status:
-            self.end_test_group()
-            raise StopGrader("Failed assert during fail-fast test.")
-
-    def assert_variable_values(self, cmp=lambda x, y: x == y, **expected):
-        if self.last_test is None:
-            raise GraderError("Can't assert before running the code.")
-        status = self.last_test.assert_variable_values(cmp, **expected)
-        if self.params.get('fail_fast', False) and not status:
-            self.end_test_group()
-            raise StopGrader("Failed assert during fail-fast test.")
-
-    def assert_variable_types(self, cmp=lambda x, y: x == y, **expected):
-        if self.last_test is None:
-            raise GraderError("Can't assert before running the code.")
-        status = self.last_test.assert_variable_types(cmp, **expected)
-        if self.params.get('fail_fast', False) and not status:
-            self.end_test_group()
-            raise StopGrader("Failed assert during fail-fast test.")
-
-    def assert_no_global_change(self):
-        if self.last_test is None:
-            raise GraderError("Can't assert before running the code.")
-        status = self.last_test.assert_no_global_change()
-        if self.params.get('fail_fast', False) and not status:
-            self.end_test_group()
-            raise StopGrader("Failed assert during fail-fast test.")
-
-    def assert_no_exception(self, **params):
-        if self.last_test is None:
-            raise GraderError("Can't assert before running the code.")
-        status = self.last_test.assert_no_exception(**params)
-        if self.params.get('fail_fast', False) and not status:
-            self.end_test_group()
-            raise StopGrader("Failed assert during fail-fast test.")
-
-    def assert_exception(self, exception_type):
-        if self.last_test is None:
-            raise GraderError("Can't assert before running the code.")
-        status = self.last_test.assert_exception(exception_type)
-        if self.params.get('fail_fast', False) and not status:
-            self.end_test_group()
-            raise StopGrader("Failed assert during fail-fast test.")
-
-    def assert_no_loop(self, funcname, keywords=("while", "for")):
-        if self.last_test is None:
-            raise GraderError("Can't assert before running the code.")
-        status = self.last_test.assert_no_loop(funcname, keywords)
-        if self.params.get('fail_fast', False) and not status:
-            self.end_test_group()
-            raise StopGrader("Failed assert during fail-fast test.")
-
-    def assert_simple_recursion(self, funcname):
-        if self.last_test is None:
-            raise GraderError("Can't assert before running the code.")
-        status = self.last_test.assert_simple_recursion(funcname)
-        if self.params.get('fail_fast', False) and not status:
-            self.end_test_group()
-            raise StopGrader("Failed assert during fail-fast test.")
-
-
 class TextLabel:
 
     def __init__(self, text):
@@ -974,14 +980,15 @@ class NoLoopAssert(Assert):
             return f"Boucle {kw} dans la fonction {self.funcname}"
 
 
-class SimpleRecursionAssert(Assert):
+class RecursionAssert(Assert):
 
-    def __init__(self, status, funcname, **params):
+    def __init__(self, status, expr, **params):
         super().__init__(status, params)
-        self.funcname = funcname
+        self.expr = expr
 
     def __str__(self):
         if self.status:
-            return f"La fonction {self.funcname} est simplement récursive"
+            return f"L'expression {self.expr} provoque des appels récursifs"
         else:
-            return f"La fonction {self.funcname} n'est pas simplement récursive"
+            return f"L'expression {self.expr} ne provoque pas d'appels " \
+                   f"récursifs"
