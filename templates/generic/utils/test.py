@@ -1,4 +1,5 @@
-import inspect
+# TODO: by default, give feedback on valid assertions
+
 import jinja2
 import operator
 import sys
@@ -8,7 +9,7 @@ from copy import deepcopy
 from io import StringIO
 from mockinput import mock_input
 from recursion_detector import performs_recursion
-from typing import Callable, Dict, List, NoReturn, Optional, Union, Any, Tuple
+from typing import *
 from unittest import mock
 
 # _default_template_dir = ''
@@ -55,10 +56,11 @@ class TestSession:
               the first error.
         """
         self.history: List[Union[Test, TestGroup]] = []
-        self.last_test: Optional[Test] = None
         self.current_test: Optional[Test] = None
+        self.previous_test: Optional[Test] = None
         self.current_test_group: Optional[TestGroup] = None
         self.analyzer: Optional[AstAnalyzer] = None
+        self.test_number = 0
         self.code = code
 
         # modname = 'studentmod'
@@ -73,14 +75,15 @@ class TestSession:
         self.params = _default_params.copy()
         self.params.update(params)
 
-    """Group management."""
+    """Group /test management."""
 
     def begin_test_group(self, title: str) -> NoReturn:
         """
-        Open new test group.
+        Open a new test group.
 
         :param title: New test group's title.
         """
+        self.cleanup()
         self.current_test_group = TestGroup(title)
         self.history.append(self.current_test_group)
 
@@ -88,10 +91,38 @@ class TestSession:
         """
         Close the current test group.
         """
-        if self.current_test_group and self.last_test:
-            self.current_test_group.update_status(self.last_test.status)
         self.current_test_group = None
-        self.last_test = None
+
+    def begin_test(self, title="", weight=1, keep_state=True):
+        if self.current_test is not None:
+            self.end_test()
+        self.test_number += 1
+        if self.previous_test is not None and keep_state:
+            state = deepcopy(self.previous_test.current_state)
+        else:
+            state = dict()
+
+        self.current_test = Test(self, self.test_number, state=state,
+                                 weight=weight, title=title)
+
+    def end_test(self):
+        if self.current_test is None:
+            raise GraderError("No test to end")
+
+        if self.current_test_group:
+            self.current_test_group.append(self.current_test)
+            self.current_test_group.update_status(self.current_test.status)
+        else:
+            self.history.append(self.current_test)
+
+        self.previous_test = self.current_test
+        self.current_test = None
+
+    def cleanup(self):
+        if self.current_test is not None:
+            self.end_test()
+        if self.current_test_group is not None:
+            self.end_test_group()
 
     """ Grading """
 
@@ -149,23 +180,20 @@ class TestSession:
 
     """Execution"""
 
+    def execute_source(self):
+        if self.current_test is None:
+            self.begin_test()
+        self.current_test.execute_source()
+
+    def evaluate(self, expression):
+        if self.current_test is None:
+            self.begin_test()
+        self.current_test.evaluate(expression)
+
     def run(self, expression: str = None, **kwargs) -> NoReturn:
         if self.current_test is None:
-            self.current_test = Test(self)
-
+            self.begin_test()
         self.current_test.run(expression, **kwargs)
-        self.last_test = self.current_test
-        self.current_test = self.last_test.copy()
-
-        # record last test
-        if self.current_test_group:
-            self.current_test_group.append(self.last_test)
-            self.current_test_group.update_status(self.last_test.status)
-        else:
-            self.history.append(self.last_test)
-
-        if self.params.get('fail_fast', False) and not self.last_test.status:
-            raise StopGrader("Failed assert during fail-fast test.")
 
     """Assertions."""
 
@@ -173,112 +201,102 @@ class TestSession:
 
     def assert_output(self, expected,
                       cmp: Callable = operator.eq):
-        if self.last_test is None:
-            raise GraderError("Can't assert before running the code.")
-        status = self.last_test.assert_output(expected, cmp)
-        if self.params.get('fail_fast', False) and not status:
-            self.end_test_group()
-            raise StopGrader("Failed assert during fail-fast test.")
+        if self.current_test is None:
+            raise GraderError("No current test, assertion impossible.")
+        self.current_test.assert_output(expected, cmp)
 
     def assert_result(self, expected,
                       cmp: Callable = operator.eq):
-        if self.last_test is None:
-            raise GraderError("Can't assert before running the code.")
-        status = self.last_test.assert_result(expected, cmp)
-        if self.params.get('fail_fast', False) and not status:
-            self.end_test_group()
-            raise StopGrader("Failed assert during fail-fast test.")
+        if self.current_test is None:
+            raise GraderError("No current test, assertion impossible.")
+        self.current_test.assert_result(expected, cmp)
 
     def assert_variable_values(self, cmp=lambda x, y: x == y, **expected):
-        if self.last_test is None:
-            raise GraderError("Can't assert before running the code.")
-        status = self.last_test.assert_variable_values(cmp, **expected)
-        if self.params.get('fail_fast', False) and not status:
-            self.end_test_group()
-            raise StopGrader("Failed assert during fail-fast test.")
+        if self.current_test is None:
+            raise GraderError("No current test, assertion impossible.")
+        self.current_test.assert_variable_values(cmp, **expected)
 
     def assert_variable_types(self, cmp=lambda x, y: x == y, **expected):
-        if self.last_test is None:
-            raise GraderError("Can't assert before running the code.")
-        status = self.last_test.assert_variable_types(cmp, **expected)
-        if self.params.get('fail_fast', False) and not status:
-            self.end_test_group()
-            raise StopGrader("Failed assert during fail-fast test.")
+        if self.current_test is None:
+            raise GraderError("No current test, assertion impossible.")
+        self.current_test.assert_variable_types(cmp, **expected)
 
     def assert_no_global_change(self):
-        if self.last_test is None:
-            raise GraderError("Can't assert before running the code.")
-        status = self.last_test.assert_no_global_change()
-        if self.params.get('fail_fast', False) and not status:
-            self.end_test_group()
-            raise StopGrader("Failed assert during fail-fast test.")
+        if self.current_test is None:
+            raise GraderError("No current test, assertion impossible.")
+        self.current_test.assert_no_global_change()
 
     def assert_no_exception(self, **params):
-        if self.last_test is None:
-            raise GraderError("Can't assert before running the code.")
-        status = self.last_test.assert_no_exception(**params)
-        if self.params.get('fail_fast', False) and not status:
-            self.end_test_group()
-            raise StopGrader("Failed assert during fail-fast test.")
+        if self.current_test is None:
+            raise GraderError("No current test, assertion impossible.")
+        self.current_test.assert_no_exception(**params)
 
     def assert_exception(self, exception_type):
-        if self.last_test is None:
-            raise GraderError("Can't assert before running the code.")
-        status = self.last_test.assert_exception(exception_type)
-        if self.params.get('fail_fast', False) and not status:
-            self.end_test_group()
-            raise StopGrader("Failed assert during fail-fast test.")
+        if self.current_test is None:
+            raise GraderError("No current test, assertion impossible.")
+        self.current_test.assert_exception(exception_type)
 
     def assert_no_loop(self, funcname, keywords=("while", "for")):
-        if self.last_test is None:
-            raise GraderError("Can't assert before running the code.")
-        status = self.last_test.assert_no_loop(funcname, keywords)
-        if self.params.get('fail_fast', False) and not status:
-            self.end_test_group()
-            raise StopGrader("Failed assert during fail-fast test.")
+        if self.current_test is None:
+            raise GraderError("No current test, assertion impossible.")
+        self.current_test.assert_no_loop(funcname, keywords)
 
     def assert_recursion(self, expr):
-        if self.last_test is None:
-            raise GraderError("Can't assert before running the code.")
-        status = self.last_test.assert_recursion(expr)
-        if self.params.get('fail_fast', False) and not status:
-            self.end_test_group()
-            raise StopGrader("Failed assert during fail-fast test.")
+        if self.current_test is None:
+            raise GraderError("No current test, assertion impossible.")
+        self.current_test.assert_recursion(expr)
+
+    def assert_defines_function(self, funcname):
+        if self.current_test is None:
+            raise GraderError("No current test, assertion impossible.")
+        self.current_test.assert_defines_function(funcname)
+
+    def assert_returns_none(self, funcname):
+        if self.current_test is None:
+            raise GraderError("No current test, assertion impossible.")
+        self.current_test.assert_returns_none(funcname)
+
+    def assert_calls_function(self, caller, callee):
+        if self.current_test is None:
+            raise GraderError("No current test, assertion impossible.")
+        self.current_test.assert_calls_function(caller, callee)
 
 
 class Test:
     """
-    Test runner. Manages code to be run, execution context, effects,
+    Test runner. Manages execution context, effects,
     assertions about the execution's outcome, and test decription.
     """
-    _number: int = 0  # Test rank in session.
 
-    def __init__(self, session: TestSession, weight: int = 1, **params):
+    def __init__(self, session: TestSession, number: int,
+                 title="", descr="", hint="", weight=1,
+                 state=None, inputs=None, argv=None,
+                 **params):
         """Test instance initializaton.
 
         :param code: Code to test.
         :param weight: Weight of the test on total grade.
+        :param title: Test title.
+        :param title: Test description.
+        :param title: Test hint.
         :param params: Additional test control parameters. Currently
             allowed keys are:
             - report_success (bool): whether or not to report passed assertions;
             - fail_fast (bool): whether or not to stop after the first error.
         """
         self.session: TestSession = session
-        self.weight = weight
-        self.expression: Optional[str] = None
-        self.params = _default_params.copy()
+        self.params: dict = _default_params.copy()
         self.params.update(params)
-        self.number: int = Test._number
-        Test._number += 1
+        self.number: int = number
 
         # execution context (backup)
-        self.previous_state: Optional[Dict[str, Any]] = None
-        self.previous_inputs: Optional[List[str]] = None
+        self.previous_state: Dict[str, Any] = {}
+        self.previous_inputs: List[str] = []
 
         # execution context (current)
-        self.current_state: Dict[str, Any] = {}
-        self.current_inputs: List[str] = []
-        self.argv: List[str] = []
+        self.current_state: Dict[str, Any] = {} if state is None else state
+        self.current_inputs: List[str] = [] if inputs is None else inputs
+        self.argv: List[str] = [] if argv is None else argv
 
         # execution effects
         self.output: str = ""
@@ -286,29 +304,16 @@ class Test:
         self.result: Any = None
 
         # test description
-        self.title: Optional[str] = None
-        self.descr: Optional[str] = None
-        self.hint: Optional[str] = None
-        self.weight: Optional[int] = 1
+        self.title: str = title
+        if title == "":
+            self.set_default_title()
+        self.descr: str = descr
+        self.hint: str = hint
+        self.weight: int = weight
 
         # assertions
         self.assertions: List[Assert] = []
         self.status: bool = True
-
-    def copy(self):
-        """
-        Make a copy of `self`, including the current state and available
-        inputs and command-line arguments.
-
-        Does nos include previous state, results, assertions, etc.
-
-        :return: historyless copy of the current test instance.
-        """
-        t = Test(self.session)
-        t.current_state = deepcopy(self.current_state)
-        t.current_inputs = self.current_inputs.copy()
-        t.argv = self.argv.copy()
-        return t
 
     """Code execution."""
 
@@ -341,6 +346,49 @@ class Test:
 
         return added, deleted, modified, inputs
 
+    def backup_state(self):
+        self.previous_state = deepcopy(self.current_state)
+        self.previous_state.pop('__builtins__', None)
+        self.previous_inputs = self.current_inputs.copy()
+
+    def execute_source(self) -> NoReturn:
+        self.backup_state()
+
+        # prepare StringIO for stdout simulation
+        out_stream = StringIO()
+
+        # run the code while mocking input, sys.argv and stdout printing
+        with mock_input(self.current_inputs, self.current_state,
+                        verbose=self.params['verbose_inputs']):
+            with mock.patch.object(sys, 'argv', self.argv):
+                with mock.patch.object(sys, 'stdout', out_stream):
+                    try:
+                        exec(self.session.code, self.current_state)
+                    except Exception as e:
+                        self.exception = e
+
+        # store generated output
+        self.output = out_stream.getvalue()
+
+    def evaluate(self, expression) -> NoReturn:
+        self.backup_state()
+
+        # prepare StringIO for stdout simulation
+        out_stream = StringIO()
+
+        # run the code while mocking input, sys.argv and stdout printing
+        with mock_input(self.current_inputs, self.current_state,
+                        verbose=self.params['verbose_inputs']):
+            with mock.patch.object(sys, 'argv', self.argv):
+                with mock.patch.object(sys, 'stdout', out_stream):
+                    try:
+                        self.result = eval(expression, self.current_state)
+                    except Exception as e:
+                        self.exception = e
+
+        # store generated output
+        self.output = out_stream.getvalue()
+
     def run(self, expression: str = None, **kwargs) -> NoReturn:
         """
         Runs the test's code and/or an expression in the current context.
@@ -357,20 +405,17 @@ class Test:
         :param expression: Expression to be evaluated (optional).
         :param kwargs: Additional context, description or assertion parameters.
         """
-        self.expression = expression
 
         # parse description-related keyword arguments
         self.parse_description_args(kwargs)
-        if self.title is None:
-            self.set_default_title()
 
         # parse context-related keyword arguments
+        if expression is not None:
+            kwargs["expression"] = expression
         self.parse_context_args(kwargs)
 
         # backup and cleanup starting state
-        self.previous_state = deepcopy(self.current_state)
-        self.previous_state.pop('__builtins__', None)
-        self.previous_inputs = self.current_inputs.copy()
+        self.backup_state()
 
         # prepare StringIO for stdout simulation
         out_stream = StringIO()
@@ -387,9 +432,6 @@ class Test:
                             self.result = eval(expression, self.current_state)
                     except Exception as e:
                         self.exception = e
-
-        # cleanup state
-        # del self.current_state['__builtins__']
 
         # store generated output
         self.output = out_stream.getvalue()
@@ -411,6 +453,7 @@ class Test:
         - allow_global_change: if present and False, forbid changes to globals;
         - output: check output (for strict equality for now);
         - result: check evaluation result, fails if no expression is passed.
+        - expression: expression to be evaluated.
         :param kwargs: Argument dictionary.
         """
 
@@ -441,11 +484,11 @@ class Test:
             self.assert_output(kwargs['output'])
         # check for evaluation result, only valid if an expression is provided
         if 'result' in kwargs:
-            if self.expression is None:
+            if 'expression' in kwargs:
+                self.assert_result(kwargs['result'])
+            else:
                 raise GraderError("Vérification du résultat demandée, "
                                   "mais pas d'expression fournie")
-            else:
-                self.assert_result(kwargs['result'])
 
     def parse_context_args(self, kwargs):
         """
@@ -509,6 +552,18 @@ class Test:
                                     fromfile='Affichage obtenu',
                                     tofile='Affichage attendu')
         return ''.join(diff)
+
+    def assert_defines_function(self, funcname):
+        """
+        Assert that the current session's contains a definition for a function
+        named `funcname`.
+
+        :param funcname: Function name.
+        :return: Assertion status.
+        """
+        status = self.session.get_analyzer().defines_function(funcname)
+        self.record_assertion(FunctionDefinitionAssert(status, funcname))
+        return status
 
     def assert_output(self, expected: Any, cmp: Callable = operator.eq) -> bool:
         """
@@ -628,12 +683,29 @@ class Test:
         self.record_assertion(RecursionAssert(status, expr))
         return status
 
+    def assert_returns_none(self, funcname: str):
+        a = self.session.get_analyzer()
+        status = a.returns_none(funcname)
+        self.record_assertion(NoReturnAssert(status, funcname))
+        return status
+
+    def assert_calls_function(self, caller: str, callee: str):
+        a = self.session.get_analyzer()
+        status = callee in a.calls_list(caller)
+        self.record_assertion(CallAssert(status, caller, callee))
+        return status
+
     def record_assertion(self, assertion: 'Assert') -> NoReturn:
         """
         Record an assertion (using an Assertion object) in the test's history.
         """
         self.assertions.append(assertion)
         self.status = self.status and assertion.status
+        self.fail_fast()
+
+    def fail_fast(self):
+        if self.params.get('fail_fast', False) and not self.status:
+            raise StopGrader("Failed assert during fail-fast test")
 
     """Feedback"""
 
@@ -658,7 +730,7 @@ class Test:
         if self.argv:
             res.append("Arguments du programme : {}".format(self.argv))
 
-        return "<br/>".join(res)
+        return "<br/>".join(res) if res else "Contexte vide"
 
     def results(self) -> str:
         """
@@ -673,7 +745,7 @@ class Test:
         res = []
         added, deleted, modified, inputs = self.summarize_changes()
 
-        if self.expression is not None:
+        if self.result is not None:
             res.append("Résultat obtenu : {}".format(self.result))
         if added:
             res.append("Variables créées : {}".format(added))
@@ -684,7 +756,7 @@ class Test:
         if inputs:
             res.append("Lignes saisies : {}".format(inputs))
         if self.output:
-            tmp = self.output.replace('\n', "↲<br>\n")
+            tmp = self.output.replace('\n', "↲\n")
             tmp = tmp.replace(' ', '⎵')
             res.append("Texte affiché : "
                        "<pre style='margin:3pt; padding:2pt; "
@@ -693,19 +765,14 @@ class Test:
         if self.exception:
             res.append("Exception levée : {} ({})".format(
                 type(self.exception).__name__, self.exception))
-        if not res:
-            res.append("Aucun effet observable")
 
-        return "<br/>".join(res)
+        return "<br/>".join(res) if res else "Aucun effet observable"
 
     def set_default_title(self) -> NoReturn:
         """
         Sets default test title.
         """
-        if self.expression is None:
-            self.title = "Exécution du programme"
-        else:
-            self.title = "Évaluation de {!r}".format(self.expression)
+        self.title = "Test {}".format(self.session.test_number)
 
     def get_grade(self):
         """
@@ -992,3 +1059,46 @@ class RecursionAssert(Assert):
         else:
             return f"L'expression {self.expr} ne provoque pas d'appels " \
                    f"récursifs"
+
+
+class FunctionDefinitionAssert(Assert):
+
+    def __init__(self, status, funcname, **params):
+        super().__init__(status, params)
+        self.funcname = funcname
+
+    def __str__(self):
+        if self.status:
+            return f"La fonction {self.funcname} est définie"
+        else:
+            return f"La fonction {self.funcname} n'est pas définie"
+
+
+class CallAssert(Assert):
+
+    def __init__(self, status, caller, callee, **params):
+        super().__init__(status, params)
+        self.caller = caller
+        self.callee = callee
+
+    def __str__(self):
+        if self.status:
+            return f"La fonction {self.caller} est susceptible " \
+                   f"d'appeler la fonction {self.callee}"
+        else:
+            return f"La fonction {self.caller} n'appelle pas la fonction " \
+                   f"{self.callee}"
+
+
+class NoReturnAssert(Assert):
+
+    def __init__(self, status, funcname, **params):
+        super().__init__(status, params)
+        self.funcname = funcname
+
+    def __str__(self):
+        if self.status:
+            return f"La fonction {self.funcname} renvoie toujours None"
+        else:
+            return f"La fonction {self.funcname} est susceptible de renvoyer " \
+                   f"une valeur différente de None"

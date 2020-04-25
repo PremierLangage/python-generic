@@ -1,3 +1,7 @@
+# Authors:
+#   Anthony Labarre <anthony.labarre@u-pem.fr>
+
+
 # Classes et fonction permettant de vérifier si une fonction donnée est
 # récursive (source: https://stackoverflow.com/a/36663046)
 from bdb import Bdb

@@ -1,3 +1,7 @@
+# Authors :
+#   Quentin Coumes <coumes.quentin@gmail.com>
+#   Antoine Meyer <antoine.meyer@u-pem.fr>
+
 from contextlib import contextmanager
 from typing import Union, List
 

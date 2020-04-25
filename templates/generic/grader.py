@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 #
 # Authors:
-#   Quentin Coumes <coumes.quentin@gmail.com>
 #   Antoine Meyer <antoine.meyer@u-pem.fr>
 
 # TODO: allow easy / easier translation of feedback
@@ -14,6 +13,7 @@
 # TODO: implement plaintext output, markdown rendering...
 # TODO: check whether cumulative context changes are such a good idea
 # TODO: better feedback appearance
+# TODO: error details in assertion feedback (line number, etc.)
 
 import ast
 import inspect
@@ -51,6 +51,7 @@ def grade_this(code: str, tests: str, context: dict):
         msg += "Veuillez contacter un enseignant.<br/>"
         msg += "<pre>{}</pre>".format(traceback.format_exc())
         return 0, msg
+    session.cleanup()
 
     return session.get_grade(), session.render()
 

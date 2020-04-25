@@ -1,24 +1,51 @@
 from ast import *
 
 
+class _StopVisit(Exception):
+    pass
+
+
+class _CallVisitor(NodeVisitor):
+    def __init__(self):
+        self.calls = []
+
+    def visit_Call(self, node):
+        if isinstance(node.func, Name):
+            self.calls.append(node.func.id)
+        self.generic_visit(node)
+
+
+class _NoReturnVisitor(NodeVisitor):
+    def visit_Return(self, node: Return):
+        if node.value is not None:
+            raise _StopVisit("Non-None return value found at line "
+                             f"{node.lineno}")
+
+
 class AstAnalyzer:
-    class _CallVisitor(NodeVisitor):
-        def __init__(self):
-            self.calls = []
-
-        def visit_Call(self, node):
-            if isinstance(node.func, Name):
-                self.calls.append(node.func.id)
-            self.generic_visit(node)
-
     def __init__(self, source: str):
         self.source = source
         self.ast = parse(source)
 
-    def function_exists(self, funcname: str):
+    def defines_function(self, funcname: str):
         return any(isinstance(node, FunctionDef)
-                   and node.name == funcname
-                   for node in iter_child_nodes(self.ast))
+                   for node in iter_child_nodes(self.ast)
+                   if node.name == funcname)
+
+    def defines_class(self, classname: str):
+        return any(isinstance(node, ClassDef)
+                   for node in iter_child_nodes(self.ast)
+                   if node.name == classname)
+
+    def returns_none(self, scope: str):
+        ast = self.clip(scope)
+        v = _NoReturnVisitor()
+        try:
+            v.visit(ast)
+        except _StopVisit as e:
+            print(e)
+            return False
+        return True
 
     _for_classes = (For, ListComp, SetComp, DictComp, GeneratorExp)
 
@@ -39,7 +66,7 @@ class AstAnalyzer:
         return find_loop(tree)
 
     def calls_list(self, scope=None):
-        visitor = self._CallVisitor()
+        visitor = _CallVisitor()
         tree = self.clip(scope)
         visitor.visit(tree)
         return visitor.calls
