@@ -1,1 +1,1 @@
-Proposition de grader PL pour AP1.
+Proposition de grader PLaTon générique pour Python.
