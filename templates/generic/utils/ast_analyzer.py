@@ -49,12 +49,12 @@ class AstAnalyzer:
 
     _for_classes = (For, ListComp, SetComp, DictComp, GeneratorExp)
 
-    def has_loop(self, scope=None):
+    def has_loop(self, scope=None, keywords=('while', 'for')):
         def find_loop(node):
-            if isinstance(node, While):
+            if 'while' in keywords and isinstance(node, While):
                 return 'while', node.lineno
-            if any(isinstance(node, nodetype) for nodetype in
-                   self._for_classes):
+            if 'for' in keywords and any(isinstance(node, nodetype)
+                                         for nodetype in self._for_classes):
                 return 'for', node.lineno
             for node in iter_child_nodes(node):
                 res = find_loop(node)

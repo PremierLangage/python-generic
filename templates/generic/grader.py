@@ -14,11 +14,12 @@
 # TODO: check whether cumulative context changes are such a good idea
 # TODO: better feedback appearance
 # TODO: error details in assertion feedback (line number, etc.)
+# TODO: new assertions
+#  - forbid calls to some function
+#  - count the number of "if"s in the code (ast)
+#  - forbid assignments (ast)
 
-import ast
 import inspect
-import importlib
-import os
 import test
 import traceback
 

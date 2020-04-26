@@ -321,8 +321,8 @@ class Test:
 
     """Code execution."""
 
-    def summarize_changes(self) -> Tuple[
-        Dict[str, any], List[str], Dict[str, Any], List[str]]:
+    def summarize_changes(self) \
+            -> Tuple[Dict[str, any], List[str], Dict[str, Any], List[str]]:
         """
         Computes the effects of the last execution (as performed by a call to
         `run()`) on the global state and input buffer.
@@ -434,8 +434,10 @@ class Test:
                     try:
                         if expression is None:
                             exec(self.session.code, self.current_state)
+                            self.executed = True
                         else:
                             self.result = eval(expression, self.current_state)
+                            self.expression = expression
                     except Exception as e:
                         self.exception = e
 
@@ -682,7 +684,7 @@ class Test:
     def assert_no_loop(self, funcname: str,
                        keywords: Tuple[str] = ("for", "while")):
         analyzer = self.session.get_analyzer()
-        status = not analyzer.has_loop(funcname)
+        status = not analyzer.has_loop(funcname, keywords)
         self.record_assertion(NoLoopAssert(status, funcname, keywords))
         return status
 
@@ -732,13 +734,13 @@ class Test:
 
         if self.previous_state:
             tmp = ", ".join(self.previous_state)
-            res.append(f"Variables globales : <tt>{tmp}</tt>")
+            res.append(f"Variables globales : <code>{tmp}</code>")
         if self.previous_inputs:
             tmp = "\n".join(self.previous_inputs)
             res.append(f"Entrées disponibles : <pre>{tmp}</pre>")
         if self.argv:
             tmp = " ".join(self.argv)
-            res.append(f"Arguments du programme : <tt>{tmp}</tt>")
+            res.append(f"Arguments du programme : <code>{tmp}</code>")
 
         return "<br/>".join(res) if res else "Pas de variables globales, " \
                                              "entrées ni arguments"
@@ -757,19 +759,19 @@ class Test:
         added, deleted, modified, inputs = self.summarize_changes()
 
         if self.expression is not None and self.result is not None:
-            res.append("Résultat obtenu : <tt>{}</tt>".format(self.result))
+            res.append("Résultat obtenu : <code>{}</code>".format(self.result))
         if added:
             tmp = ", ".join(added)
-            res.append(f"Variables créées : <tt>{tmp}</tt>")
+            res.append(f"Variables créées : <code>{tmp}</code>")
         if modified:
             tmp = ", ".join(modified)
-            res.append(f"Variables modifiées : <tt>{tmp}</tt>")
+            res.append(f"Variables modifiées : <code>{tmp}</code>")
         if deleted:
             tmp = ", ".join(deleted)
-            res.append(f"Variables supprimées : <tt>{tmp}</tt>")
+            res.append(f"Variables supprimées : <code>{tmp}</code>")
         if inputs:
             tmp = "<br/>\n".join(inputs)
-            res.append(f"Lignes saisies : <tt>{tmp}</tt>")
+            res.append(f"Lignes saisies : <code>{tmp}</code>")
         if self.output:
             tmp = self.output.replace('\n', "↲\n")
             tmp = tmp.replace(' ', '⎵')
@@ -974,8 +976,8 @@ class ExceptionAssert(Assert):
         if self.status:
             return "L'exception attendue a été levée"
         else:
-            return "Une exception de type <tt>{}</tt> était attendue".format(
-                self.exception)
+            return f"Une exception de type <code>{self.exception}</code> " \
+                   f"était attendue"
 
 
 class ResultAssert(Assert):
@@ -1010,10 +1012,10 @@ class VariableValuesAssert(Assert):
             res = "Variables globales incorrectes : "
             details = []
             for var in self.missing:
-                details.append("<tt>{}</tt> manquante".format(var))
+                details.append("<code>{}</code> manquante".format(var))
             for var in self.incorrect:
-                details.append("<tt>{}</tt> devrait valoir "
-                               "<tt>{!r}</tt>".format(var, self.expected[var]))
+                details.append(f"<code>{var}</code> devrait valoir "
+                               "<code>{self.expected[var]!r}</code>")
             res += "; ".join(details)
         return res
 
@@ -1033,10 +1035,10 @@ class VariableTypesAssert(Assert):
             res = "Variables globales incorrectes : "
             details = []
             for var in self.missing:
-                details.append("<tt>{}</tt> manquante".format(var))
+                details.append("<code>{}</code> manquante".format(var))
             for var in self.incorrect:
-                details.append("<tt>{}</tt> devrait être de type "
-                               "<tt>{!r}</tt>".format(var, self.expected[var]))
+                details.append(f"<code>{var}</code> devrait être de type "
+                               f"<code>{self.expected[var]!r}</code>")
             res += "; ".join(details)
         return res
 
@@ -1064,10 +1066,10 @@ class NoLoopAssert(Assert):
     def __str__(self):
         kw = " ou ".join(self.keywords)
         if self.status:
-            return f"Pas de boucle {kw} dans la fonction <tt>" \
-                   f"{self.funcname}</tt>"
+            return f"Pas de boucle {kw} dans la fonction <code>" \
+                   f"{self.funcname}</code>"
         else:
-            return f"Boucle {kw} dans la fonction <tt>{self.funcname}</tt>"
+            return f"Boucle {kw} dans la fonction <code>{self.funcname}</code>"
 
 
 class RecursionAssert(Assert):
@@ -1078,10 +1080,10 @@ class RecursionAssert(Assert):
 
     def __str__(self):
         if self.status:
-            return f"L'expression <tt>{self.expr}</tt> provoque des " \
+            return f"L'expression <code>{self.expr}</code> provoque des " \
                    f"appels récursifs"
         else:
-            return f"L'expression <tt>{self.expr}</tt> ne provoque pas " \
+            return f"L'expression <code>{self.expr}</code> ne provoque pas " \
                    f"d'appels récursifs"
 
 
@@ -1093,9 +1095,9 @@ class FunctionDefinitionAssert(Assert):
 
     def __str__(self):
         if self.status:
-            return f"La fonction <tt>{self.funcname}</tt> est définie"
+            return f"La fonction <code>{self.funcname}</code> est définie"
         else:
-            return f"La fonction <tt>{self.funcname}</tt> n'est pas définie"
+            return f"La fonction <code>{self.funcname}</code> n'est pas définie"
 
 
 class CallAssert(Assert):
@@ -1107,11 +1109,11 @@ class CallAssert(Assert):
 
     def __str__(self):
         if self.status:
-            return f"La fonction <tt>{self.caller}</tt> est susceptible " \
+            return f"La fonction <code>{self.caller}</code> est susceptible " \
                    f"d'appeler la fonction {self.callee}"
         else:
-            return f"La fonction <tt>{self.caller}</tt> n'appelle pas la " \
-                   f"fonction <tt>{self.callee}</tt>"
+            return f"La fonction <code>{self.caller}</code> n'appelle pas la " \
+                   f"fonction <code>{self.callee}</code>"
 
 
 class NoReturnAssert(Assert):
@@ -1122,7 +1124,9 @@ class NoReturnAssert(Assert):
 
     def __str__(self):
         if self.status:
-            return f"La fonction <tt>{self.funcname}</tt> renvoie toujours None"
+            return f"La fonction <code>{self.funcname}</code> " \
+                   "renvoie toujours None"
         else:
-            return f"La fonction <tt>{self.funcname}</tt> est susceptible de " \
-                   f"renvoyer une valeur différente de <tt>None</tt>"
+            return f"La fonction <code>{self.funcname}</code> " \
+                   "est susceptible de renvoyer une valeur différente de " \
+                   "<code>None</code>"
