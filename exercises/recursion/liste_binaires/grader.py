@@ -17,7 +17,6 @@ assert_no_exception()
 
 begin_test('Respect des consignes', fail_fast=False)
 assert_defines_function("liste_binaires")
-assert_no_loop("liste_binaires")
 assert_recursion("liste_binaires(3)")
 
 for i in range(10):
