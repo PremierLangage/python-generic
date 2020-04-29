@@ -1,3 +1,4 @@
 exercises/conditions/tri_trois_valeurs
 exercises/recursion/affiche_binaires
+exercises/recursion/liste_binaires
 exercises/recursion/sous_listes

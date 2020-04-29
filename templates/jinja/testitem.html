@@ -16,19 +16,27 @@
                 <div id="{{ test.make_id() }}"
                      class="{%  if not test.status %}show{% else %}collapse{% endif %}">
                     <div class="card {% if not test.status %}card-danger{% else %}card-success{% endif %};">
+                        {% if test.executed %}
+                        <p><b>Exécution du programme</b></p>
+                        {% endif %}
+                        {% if test.expression %}
+                        <p><b>Évaluation de l'expression
+                            <code>{{test.expression}}</code>
+                        </b></p>
+                        {% endif %}
                         {% if test.executed or test.expression %}
                         <p>
-                            <b>
+                            <emph>
                                 Contexte d'exécution :
-                            </b>
+                            </emph>
                         </p>
                         <p>
                             {{ test.context() }}
                         </p>
                         <p>
-                            <b>
-                                Effets du programme :
-                            </b>
+                            <em>
+                                Effets observés :
+                            </em>
                         </p>
                         <p>
                             {{ test.results() }}

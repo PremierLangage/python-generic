@@ -1,10 +1,14 @@
 @ /utils/sandboxio.py
 @ builder.py
 @ grader.py
+
 @ utils/test.py
 @ utils/mockinput.py
-@ utils/testgroup.html
-@ utils/testitem.html
+@ utils/ast_analyzer.py
+@ utils/recursion_detector.py
+
+@ jinja/testgroup.html
+@ jinja/testitem.html
 
 title = <em>(Pas de titre défini)</em>
 text = <em>(Pas d'énoncé défini)</em>
@@ -24,7 +28,7 @@ form==
 {{editor|component}}
 ==
 
-# définition de la procédure de validation
+# définition de la procédure de validation par défaut
 grader==
 begin_test_group("L'exercice n'a pas défini de procédure de validation.")
 ==
