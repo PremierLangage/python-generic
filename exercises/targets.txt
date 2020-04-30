@@ -5,3 +5,4 @@ exercises/recursion/liste_listes_binaires
 exercises/recursion/sous_listes
 exercises/recursion/permutations_1
 exercises/recursion/permutations_2
+exercises/recursion/logimage

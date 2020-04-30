@@ -18,6 +18,7 @@
 #  - forbid calls to some function
 #  - count the number of "if"s in the code (ast)
 #  - forbid assignments (ast)
+#  - forbid global change to parameter values (lists...)
 
 import inspect
 import test
