@@ -1,8 +1,9 @@
-exercises/conditions/tri_trois_valeurs
-exercises/recursion/affiche_binaires
-exercises/recursion/liste_binaires
-exercises/recursion/liste_listes_binaires
-exercises/recursion/sous_listes
-exercises/recursion/permutations_1
-exercises/recursion/permutations_2
-exercises/recursion/logimage
+#exercises/conditions/tri_trois_valeurs
+#exercises/recursion/affiche_binaires
+#exercises/recursion/liste_binaires
+#exercises/recursion/liste_listes_binaires
+#exercises/recursion/sous_listes
+#exercises/recursion/permutations_1
+#exercises/recursion/permutations_2
+#exercises/recursion/logimage
+exercises/recursion/somme_liste

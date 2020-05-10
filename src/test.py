@@ -1,4 +1,4 @@
-# TODO: by default, give feedback on valid assertions
+import importlib.util
 
 import jinja2
 import operator
@@ -6,6 +6,7 @@ import sys
 
 from ast_analyzer import AstAnalyzer
 from copy import deepcopy
+from inspect import getfullargspec
 from io import StringIO
 from mockinput import mock_input
 from recursion_detector import performs_recursion
@@ -20,8 +21,65 @@ _default_group_template = _default_template_dir + 'testgroup.html'
 _default_params = {
     "verbose_inputs": True,
     "report_success": True,
-    "fail_fast": True,
+    "group_fail_fast": True,
+    "test_fail_fast": True,
 }
+
+_excluded_globals = {"__name__", "__doc__", "__package__",
+                     "__loader__", "__spec__", "__builtins__"}
+
+
+def _unidiff_output(expected, actual):
+    """
+    Helper function. Returns a string containing the unified diff of two
+    multiline strings. Thanks https://stackoverflow.com/a/845432/4206331
+    """
+
+    import difflib
+    expected = expected.splitlines(1)
+    actual = actual.splitlines(1)
+    diff = difflib.unified_diff(actual, expected,
+                                fromfile='Affichage obtenu',
+                                tofile='Affichage attendu')
+    return ''.join(diff)
+
+
+def _compare_namespaces(previous, current):
+    """
+    Computes the difference between two namespaces received as dicts.
+
+    Dictionary `previous` represents an initial namespace, `current` a current
+    one. 
+
+    :return: tuple `(added, deleted, modified, inputs)`, where:
+        - `added` is a dictionary mapping new identifiers to their values;
+        - `deleted` is a list of deleted identifiers;
+        - `modified` is a dictionary mapping existing identifiers to their
+        (new) values.
+    """
+    deleted = list(previous.keys() - current.keys())
+    modified = {var: (previous[var], current[var])
+                for var in previous.keys() & current.keys() - _excluded_globals
+                if previous[var] != current[var]}
+    added = {var: current[var]
+             for var in current.keys() - previous.keys() - _excluded_globals}
+    return added, deleted, modified
+
+
+def _argument_dict(argnames, args, kwargs):
+    dic = {name: deepcopy(value)
+           for name, value in zip(argnames, args)}
+    dic.update({name: deepcopy(value)
+                for name, value in kwargs.items()})
+    return dic
+
+
+def _expression_from_call(funcname, args, kwargs):
+    argstr = ", ".join(str(arg) for arg in args)
+    if kwargs:
+        argstr += ", " + ", ".join(f'{name}={val}'
+                                   for name, val in kwargs.items())
+    return f"{funcname}({argstr})"
 
 
 class GraderError(Exception):
@@ -61,16 +119,9 @@ class TestSession:
         self.current_test_group: Optional[TestGroup] = None
         self.analyzer: Optional[AstAnalyzer] = None
         self.test_number = 0
+
         self.code = code
-
-        # modname = 'studentmod'
-        # spec = importlib.util.spec_from_loader(modname, loader=None)
-        # module = importlib.util.module_from_spec(spec)
-        # exec(code, module.__dict__)
-        # sys.modules[modname] = module
-
-        # self.module = module
-        # self.module = importlib.import_module('student')
+        self.module = None
 
         self.params = _default_params.copy()
         self.params.update(params)
@@ -98,18 +149,22 @@ class TestSession:
     def begin_test(self, title="", weight=1, keep_state=True, **params):
         if self.current_test is not None:
             self.end_test()
+
         self.test_number += 1
+
+        if "state" not in params or params["state"] is None:
+            params["state"] = {}
         if self.previous_test is not None and keep_state:
-            state = deepcopy(self.previous_test.current_state)
-        else:
-            state = dict()
+            previous_state = self.previous_test.current_state
+            params["state"].update({key: deepcopy(val)
+                                    for key, val in previous_state.items()})
 
         test_params = dict(self.params)
         if self.current_test_group is not None:
             test_params.update(self.current_test_group.params)
         test_params.update(params)
 
-        self.current_test = Test(self, self.test_number, state=state,
+        self.current_test = Test(self, self.test_number,
                                  weight=weight, title=title,
                                  **test_params)
 
@@ -131,6 +186,153 @@ class TestSession:
             self.end_test()
         if self.current_test_group is not None:
             self.end_test_group()
+
+    """ Predefined tests """
+
+    def test(self,
+             # execution target
+             expression=None, force_reload=False,
+             funcname=None, args=None, kwargs=None,
+             # description args
+             title="", descr="", hint="", weight=1,
+             # context args
+             state=None, inputs=None, argv=None,
+             # assertion args
+             exception=None, values=None, types=None,
+             output=None, outcmp=operator.eq,
+             result=NoReturn, rescmp=operator.eq,
+             allow_arg_change=True, allow_global_change=True,
+             detect_recursion=False):
+        """
+        Starts a new test based on provided parameters.
+        
+        This method manages multiple optional arguments allowing it to
+        control many execution settings. Arguments are of three kinds:
+        context arguments which modify the execution's context, description
+        arguments, and assertion arguments which entail automatic assertions
+        on the execution.
+
+        For details on the allowed arguments, see `parse_description_args`,
+        `parse_context_args` and `parse_assertion_args`.
+
+        :param expression: Expression to be evaluated (optional).
+        """
+        if self.current_test is not None:
+            self.end_test()
+
+        if state is None:
+            state = {}
+        if (self.previous_test is not None
+                and self.params.get("keep_state", True)):
+            pre = self.previous_test.current_state
+            state.update(deepcopy(pre))
+
+        test_params = self.params.copy()
+        if self.current_test_group is not None:
+            test_params.update(self.current_test_group.params)
+
+        self.test_number += 1
+        self.current_test = Test(self, self.test_number,
+                                 weight=weight, title=title,
+                                 **test_params)
+
+        test = Test(self, self.test_number,
+                    title=title, descr=descr, hint=hint, weight=weight,
+                    state=state, inputs=inputs, argv=argv,
+                    **self.params)
+        self.current_test = test
+
+        # Execute student code if required
+        if force_reload or self.module is None:
+            self.current_test.execute_source()
+
+        # What should we do?
+        if expression and funcname:
+            raise GraderError(
+                "Ne pas spécifier à la fois expression et funcname")
+        elif expression:
+            if not title:
+                test.set_default_title(expression)
+            test.expression = expression
+            test.evaluate(expression)
+        elif funcname:
+            if kwargs is None:
+                kwargs = {}
+            expression = _expression_from_call(funcname, args, kwargs)
+            if not title:
+                test.set_default_title(expression)
+            test.expression = expression
+            test.call_function(funcname, args, kwargs)
+        elif result is not NoReturn:
+            raise GraderError("Vérification du résultat demandée, "
+                              "mais pas d'expression ni d'appel à évaluer")
+
+        # manage exceptions
+        if exception is not None:
+            # if parameter exception=SomeExceptionClass is passed, silently
+            # check it is indeed raised
+            self.assert_exception(exception)
+        else:
+            # unless some exception is explicitly expected, forbid them
+            self.assert_no_exception()
+        # check for evaluation or call result
+        if result is not NoReturn:
+            self.assert_result(result, rescmp)
+        # check for standard output
+        if output is not None:
+            self.assert_output(output, outcmp)
+        # check global values
+        if values is not None:
+            # for now we have no facility to check that some variable was
+            # deleted, we only check that some variables exist
+            self.assert_variable_values(**values)
+        if types is not None:
+            # for now we have no facility to check that some variable was
+            # deleted, we only check that some variables exist
+            self.assert_variable_types(**types)
+        if not allow_global_change:
+            # forbid changes to global variables
+            self.assert_no_global_change()
+        if funcname and not allow_arg_change:
+            # forbid changes to mutable arguments (only valid for calls)
+            self.assert_no_arg_change()
+        if (funcname or expression) and detect_recursion:
+            # detect recursion (only valid for calls or expressions)
+            self.current_test.detect_recursion(funcname, args, kwargs)
+            self.assert_previous_recursion()
+
+    def test_call(self, funcname, *args,
+                  kwargs=None,
+                  reffunc=None,
+                  result=...,
+                  **params):
+        """
+        Test the call `funcname(*args, **kwargs)`.
+
+        The call's result is either compared to `result` or to the result of
+        the function `reffunc`. One or the other must be provided.
+
+        Parameter `reffunc` should be a callable object with no side-effects
+        **at all**.
+
+        Unless otherwise specified in `params`, asserts the absence of
+        side-effects of the following kind:
+        - no input read and no output printed ;
+        - no modification of global variables (including mutable parameters) ;
+        - no exception raised ;
+        """
+        params.setdefault("allow_global_change", False)
+        params.setdefault("allow_arg_change", False)
+
+        if kwargs is None:
+            kwargs = {}
+        if reffunc is None and result is ...:
+            raise GraderError("Test impossible, fournir l'un ou l'autre de "
+                              "result ou reffunc")
+        elif reffunc:
+            result = reffunc(*args, **kwargs)
+        self.test(funcname=funcname, args=args, kwargs=kwargs, result=result,
+                  **params)
 
     """ Grading """
 
@@ -154,19 +356,8 @@ class TestSession:
             self.analyzer = AstAnalyzer(self.code)
         return self.analyzer
 
-    """Setters for the next test."""
-
-    def set_title(self, title):
-        self.current_test.title = title
-
-    def set_weight(self, weight):
-        self.current_test.weight = weight
-
-    def set_descr(self, descr):
-        self.current_test.descr = descr
-
-    def set_hint(self, hint):
-        self.current_test.hint = hint
+    def get_state(self) -> dict:
+        return deepcopy(self.current_test.current_state)
 
     """Setters for execution context."""
 
@@ -179,6 +370,9 @@ class TestSession:
 
     def set_state(self, state: dict) -> NoReturn:
         self.current_test.current_state = state
+
+    def update_state(self, state: dict) -> NoReturn:
+        self.current_test.current_state.update(state)
 
     def set_argv(self, argv: List[str]) -> NoReturn:
         self.current_test.argv = argv.copy()
@@ -198,76 +392,178 @@ class TestSession:
             self.begin_test()
         self.current_test.evaluate(expression)
 
-    def run(self, expression: str = None, **kwargs) -> NoReturn:
-        if self.current_test is None:
-            self.begin_test()
-        self.current_test.run(expression, **kwargs)
-
     """Assertions."""
 
-    # TODO: unhappy about code duplication in assertion mechanism, fix this.
+    def assert_output(self, expected: str, cmp: Callable = operator.eq):
+        """
+        Assert that the last run's output equals `expected` (using `cmp` as
+        comparison operator).
 
-    def assert_output(self, expected,
-                      cmp: Callable = operator.eq):
+        :param expected: Expected value of the output.
+        :param cmp: Output comparison function.
+        """
         if self.current_test is None:
             raise GraderError("No current test, assertion impossible.")
-        self.current_test.assert_output(expected, cmp)
+        output = self.current_test.stdout
+        status = cmp(expected, output)
+        self.current_test.record_assertion(
+            OutputAssert(status, expected, output))
 
-    def assert_result(self, expected,
-                      cmp: Callable = operator.eq):
+    def assert_result(self, expected, cmp: Callable = operator.eq):
+        """
+        Assert that the last run's result equals `expected` (using `cmp` as
+        comparison operator).
+
+        :param expected: Expected value of the result.
+        :param cmp: Output comparison function.
+        :return: Assertion status.
+        """
         if self.current_test is None:
             raise GraderError("No current test, assertion impossible.")
-        self.current_test.assert_result(expected, cmp)
+        expr = self.current_test.expression
+        if expr is None:
+            raise GraderError("No expression was evaluated")
+        res = self.current_test.result
+        status = cmp(expected, res)
+        self.current_test.record_assertion(
+            ResultAssert(status, expr, expected, res))
 
-    def assert_variable_values(self, cmp=lambda x, y: x == y, **expected):
+    def assert_variable_values(self, cmp=operator.eq, **expected):
+        """
+        Assert that the values of some variables after the last run equal
+        their values in the `expected` dictionary (using `cmp` as comparison
+        operator).
+
+        :param expected: Expected value of the variables.
+        :param cmp: Value comparison function.
+        :return: Assertion status.
+        """
         if self.current_test is None:
             raise GraderError("No current test, assertion impossible.")
-        self.current_test.assert_variable_values(cmp, **expected)
+        if not expected:
+            raise GraderError("No expected values provided.")
+        state = self.current_test.current_state
+        missing = list(expected.keys() - state.keys())
+        incorrect = {var: state[var] for var in expected.keys() & state.keys()
+                     if not cmp(expected[var], state[var])}
+        status = not (missing or incorrect)
+        self.current_test.record_assertion(
+            VariableValuesAssert(status, expected, missing, incorrect))
 
-    def assert_variable_types(self, cmp=lambda x, y: x == y, **expected):
+    def assert_variable_types(self, cmp=operator.eq, **expected):
+        """
+        Assert that the types of some variables after the last run equal
+        their values in the `expected` dictionary (using `cmp` as comparison
+        operator).
+
+        :param expected: Expected type of the variables.
+        :param cmp: Value comparison function.
+        """
         if self.current_test is None:
             raise GraderError("No current test, assertion impossible.")
-        self.current_test.assert_variable_types(cmp, **expected)
+        if not expected:
+            raise GraderError("No expected types provided.")
+        state = self.current_test.current_state
+        missing = list(expected.keys() - state.keys())
+        incorrect = {var: state[var] for var in expected.keys() & state.keys()
+                     if not cmp(expected[var], type(state[var]))}
+
+        status = not (missing or incorrect)
+        self.current_test.record_assertion(
+            VariableTypesAssert(status, expected, missing, incorrect))
 
     def assert_no_global_change(self):
+        """
+        Assert that no global variables changed during the last run.
+        """
         if self.current_test is None:
             raise GraderError("No current test, assertion impossible.")
-        self.current_test.assert_no_global_change()
+        previous = self.current_test.previous_state
+        current = self.current_test.current_state
+        added, deleted, modified = _compare_namespaces(previous, current)
+        status = not (added or deleted or modified)
+        self.current_test.record_assertion(NoGlobalChangeAssert(status))
+
+    def assert_no_arg_change(self):
+        """
+        Assert that no argument changed during the last run.
+        """
+        if self.current_test is None:
+            raise GraderError("No current test, assertion impossible.")
+        previous = self.current_test.pre_args
+        current = self.current_test.post_args
+        added, deleted, modified = _compare_namespaces(previous, current)
+        status = not (added or deleted or modified)
+        self.current_test.record_assertion(NoArgsChangeAssert(status))
 
     def assert_no_exception(self, **params):
+        """
+        Assert that no exception was raised during the last run.
+        """
         if self.current_test is None:
             raise GraderError("No current test, assertion impossible.")
-        self.current_test.assert_no_exception(**params)
+        status = self.current_test.exception is None
+        self.current_test.record_assertion(
+            NoExceptionAssert(status, self.current_test.exception, **params))
 
-    def assert_exception(self, exception_type):
+    def assert_exception(self, exception_type) -> NoReturn:
+        """
+        Assert that an exception of type `exception_type` was raised during the
+        last expression evaluation or program execution.
+        """
         if self.current_test is None:
             raise GraderError("No current test, assertion impossible.")
-        self.current_test.assert_exception(exception_type)
+        status = isinstance(self.current_test.exception, exception_type)
+        self.current_test.record_assertion(
+            ExceptionAssert(status, exception_type))
 
     def assert_no_loop(self, funcname, keywords=("while", "for")):
         if self.current_test is None:
             raise GraderError("No current test, assertion impossible.")
-        self.current_test.assert_no_loop(funcname, keywords)
+        status = not self.get_analyzer().has_loop(funcname, keywords)
+        self.current_test.record_assertion(
+            NoLoopAssert(status, funcname, keywords))
 
     def assert_recursion(self, expr):
+        # TODO : fix this, should be controlled
         if self.current_test is None:
             raise GraderError("No current test, assertion impossible.")
-        self.current_test.assert_recursion(expr)
+        call = eval("lambda: " + expr, deepcopy(self.module.__dict__))
+        status = performs_recursion(call)
+        self.current_test.record_assertion(RecursionAssert(status, expr))
+
+    def assert_previous_recursion(self):
+        if self.current_test is None:
+            raise GraderError("No current test, assertion impossible.")
+        self.current_test.record_assertion(
+            RecursionAssert(self.current_test.recursion,
+                            self.current_test.expression))
 
     def assert_defines_function(self, funcname):
+        """
+        Assert that the current session's contains a definition for a function
+        named `funcname`.
+
+        :param funcname: Function name.
+        """
         if self.current_test is None:
             raise GraderError("No current test, assertion impossible.")
-        self.current_test.assert_defines_function(funcname)
+        status = self.get_analyzer().defines_function(funcname)
+        self.current_test.record_assertion(
+            FunctionDefinitionAssert(status, funcname))
 
     def assert_returns_none(self, funcname):
         if self.current_test is None:
             raise GraderError("No current test, assertion impossible.")
-        self.current_test.assert_returns_none(funcname)
+        status = self.get_analyzer().returns_none(funcname)
+        self.current_test.record_assertion(NoReturnAssert(status, funcname))
+        return status
 
     def assert_calls_function(self, caller, callee):
         if self.current_test is None:
             raise GraderError("No current test, assertion impossible.")
-        self.current_test.assert_calls_function(caller, callee)
+        status = callee in self.get_analyzer().calls_list(caller)
+        self.current_test.record_assertion(CallAssert(status, caller, callee))
 
 
 class Test:
@@ -277,9 +573,12 @@ class Test:
     """
 
     def __init__(self, session: TestSession, number: int,
-                 title="", descr="", hint="", weight=1,
-                 state=None, inputs=None, argv=None,
-                 **params):
+                 title: str = "", descr: str = "",
+                 hint: str = "", weight: int = 1,
+                 state: Optional[dict] = None,
+                 inputs: Optional[list] = None,
+                 argv: Optional[list] = None,
+                 **params: dict) -> NoReturn:
         """Test instance initializaton.
 
         :param code: Code to test.
@@ -302,23 +601,32 @@ class Test:
         self.previous_inputs: List[str] = []
 
         # execution context (current)
-        self.current_state: Dict[str, Any] = {} if state is None else state
+        if self.session.module is not None:
+            self.current_state = self.session.module.__dict__
+        else:
+            self.current_state = {}
+        if state is not None:
+            self.current_state.update(state)
         self.current_inputs: List[str] = [] if inputs is None else inputs
         self.argv: List[str] = [] if argv is None else argv
+        self.pre_args = None
 
         # test state (last run expression, code execution flag)
         self.executed: bool = False
         self.expression: Optional[str] = None
 
         # execution effects
-        self.output: str = ""
+        self.stdout: str = ""
+        self.stderr: str = ""
+        self.post_args = None
         self.exception: Optional[Exception] = None
         self.result: Any = None
+        self.recursion = False
 
         # test description
         self.title: str = title
         if title == "":
-            self.set_default_title()
+            self.title = "Test {}".format(self.number)
         self.descr: str = descr
         self.hint: str = hint
         self.weight: int = weight
@@ -329,390 +637,92 @@ class Test:
 
     """Code execution."""
 
-    def summarize_changes(self) \
-            -> Tuple[Dict[str, any], List[str], Dict[str, Any], List[str]]:
-        """
-        Computes the effects of the last execution (as performed by a call to
-        `run()`) on the global state and input buffer.
-
-        :return: tuple `(added, deleted, modified, inputs)`, where:
-            - `added` is a dictionary mapping new identifiers to their values;
-            - `deleted` is a list of deleted identifiers;
-            - `modified` is a dictionary mapping existing identifiers to their
-            (new) values;
-            - `inputs` is a list of read input lines.
-        """
-        deleted = list(self.previous_state.keys() - self.current_state.keys())
-
-        modified = {
-            var1: self.current_state[var1]
-            for var1 in self.previous_state.keys() & self.current_state.keys()
-            if self.previous_state[var1] != self.current_state[var1]}
-
-        added = {var: self.current_state[var] for var in
-                 self.current_state.keys() - self.previous_state.keys()
-                 - {'__builtins__'}}
-
-        n = len(self.previous_inputs) - len(self.current_inputs)
-        inputs = self.previous_inputs[:n]
-
-        return added, deleted, modified, inputs
-
     def backup_state(self):
-        self.previous_state = deepcopy(self.current_state)
-        self.previous_state.pop('__builtins__', None)
+        if self.session.module is not None:
+            self.previous_state = deepcopy(self.session.module.__dict__)
+        else:
+            self.previous_state = {}
         self.previous_inputs = self.current_inputs.copy()
 
     def execute_source(self) -> NoReturn:
-        self.backup_state()
+
+        if self.session.module is None:
+            modname = 'studentmod'
+            spec = importlib.util.spec_from_loader(modname, loader=None)
+            self.session.module = importlib.util.module_from_spec(spec)
+            self.current_state = self.session.module.__dict__
+            sys.modules[modname] = self.session.module
+
+            def runnable():
+                exec(self.session.code, self.current_state)
+        else:
+            def runnable():
+                importlib.reload(self.session.module)
+
+        self.controlled_run(runnable)
         self.executed = True
 
-        # prepare StringIO for stdout simulation
-        out_stream = StringIO()
-
-        # run the code while mocking input, sys.argv and stdout printing
-        with mock_input(self.current_inputs, self.current_state,
-                        verbose=self.params['verbose_inputs']):
-            with mock.patch.object(sys, 'argv', self.argv):
-                with mock.patch.object(sys, 'stdout', out_stream):
-                    try:
-                        exec(self.session.code, self.current_state)
-                    except Exception as e:
-                        self.exception = e
-
-        # store generated output
-        self.output = out_stream.getvalue()
-
     def evaluate(self, expression) -> NoReturn:
+        def runnable():
+            return eval(expression, self.current_state)
+
         self.backup_state()
         self.expression = expression
+        self.result = self.controlled_run(runnable)
 
-        # prepare StringIO for stdout simulation
-        out_stream = StringIO()
+    def call_function(self, funcname, args, kwargs):
+        # get function object and argument names
+        function = getattr(self.session.module, funcname)
+        argnames = getfullargspec(function)[0]
 
-        # run the code while mocking input, sys.argv and stdout printing
-        with mock_input(self.current_inputs, self.current_state,
-                        verbose=self.params['verbose_inputs']):
-            with mock.patch.object(sys, 'argv', self.argv):
-                with mock.patch.object(sys, 'stdout', out_stream):
-                    try:
-                        self.result = eval(expression, self.current_state)
-                    except Exception as e:
-                        self.exception = e
+        # store argument values pre-call
+        self.pre_args = _argument_dict(argnames, args, kwargs)
 
-        # store generated output
-        self.output = out_stream.getvalue()
+        # perform the call
+        def runnable():
+            return function(*args, **kwargs)
+        self.result = self.controlled_run(runnable)
 
-    def run(self, expression: str = None, **kwargs) -> NoReturn:
-        """
-        Runs the test's code and/or an expression in the current context.
+        # store argument values post-call
+        self.post_args = _argument_dict(argnames, args, kwargs)
 
-        This method manages multiple optional arguments allowing it to
-        control many execution settings. Arguments are of three kinds:
-        context arguments which modify the execution's context, description
-        arguments, and assertion arguments which entail automatic assertions
-        on the execution.
+    def detect_recursion(self, funcname, args, kwargs):
+        # get function object and argument names
+        function = getattr(self.session.module, funcname)
 
-        For details on the allowed arguments, see `parse_description_args`,
-        `parse_context_args` and `parse_assertion_args`.
+        # perform the call
+        def runnable():
+            return performs_recursion(lambda: function(*args, **kwargs))
+        self.recursion = self.controlled_run(runnable)
 
-        :param expression: Expression to be evaluated (optional).
-        :param kwargs: Additional context, description or assertion parameters.
-        """
-
-        # parse description-related keyword arguments
-        self.parse_description_args(kwargs)
-
-        # parse context-related keyword arguments
-        if expression is not None:
-            kwargs["expression"] = expression
-        self.parse_context_args(kwargs)
-
-        # backup and cleanup starting state
+    def controlled_run(self, runnable):
+        # backup previous state
         self.backup_state()
 
         # prepare StringIO for stdout simulation
-        out_stream = StringIO()
+        stdout_stream = StringIO()
+        stderr_stream = StringIO()
 
         # run the code while mocking input, sys.argv and stdout printing
-        with mock_input(self.current_inputs, self.current_state,
-                        verbose=self.params['verbose_inputs']):
-            with mock.patch.object(sys, 'argv', self.argv):
-                with mock.patch.object(sys, 'stdout', out_stream):
-                    try:
-                        if expression is None:
-                            exec(self.session.code, self.current_state)
-                            self.executed = True
-                        else:
-                            self.result = eval(expression, self.current_state)
-                            self.expression = expression
-                    except Exception as e:
-                        self.exception = e
+        try:
+            with mock_input(self.current_inputs, self.current_state,
+                            verbose=self.params['verbose_inputs']):
+                with mock.patch.object(sys, 'argv', self.argv):
+                    with mock.patch.object(sys, 'stdout', stdout_stream):
+                        with mock.patch.object(sys, 'stderr', stderr_stream):
+                            res = runnable()
+        except Exception as e:
+            self.exception = e
+            res = None
 
         # store generated output
-        self.output = out_stream.getvalue()
+        self.stdout = stdout_stream.getvalue()
+        self.stderr = stderr_stream.getvalue()
 
-        # parse assertion-related keyword arguments
-        self.parse_assertion_args(kwargs)
-
-    def parse_assertion_args(self, kwargs) -> NoReturn:
-        """
-        Parse assertion arguments to the `run()` method.
-
-        Currently allowed arguments are :
-        - exception: if exception=SomeExceptionClass is passed, check it is
-          indeed raised;
-        - allow_exception: is exception is None or not passed,
-          and 'allow_exception' is either absent or False, forbid exceptions;
-        - values: a dictionary of values whose existence and value to check;
-        - types: a dictionary of values whose existence and type to check;
-        - allow_global_change: if present and False, forbid changes to globals;
-        - output: check output (for strict equality for now);
-        - result: check evaluation result, fails if no expression is passed.
-        - expression: expression to be evaluated.
-        :param kwargs: Argument dictionary.
-        """
-
-        # manage exceptions
-        if 'exception' in kwargs and kwargs['exception'] is not None:
-            # if parameter exception=SomeExceptionClass is passed, silently
-            # check it is indeed raised
-            self.assert_exception(kwargs['exception'])
-        elif 'allow_exception' not in kwargs or not kwargs['allow_exception']:
-            # unless exceptions are explicitly allowed by parameter
-            # allow_exception=True, forbid them
-            self.assert_no_exception()
-        # check global values
-        if 'values' in kwargs:
-            # for now we have no facility to check that some variable was
-            # deleted, we only check that some variables exist
-            self.assert_variable_values(**kwargs['values'])
-        if 'types' in kwargs:
-            # for now we have no facility to check that some variable was
-            # deleted, we only check that some variables exist
-            self.assert_variable_types(**kwargs['types'])
-        if ('allow_global_change' in kwargs
-                and not kwargs['allow_global_change']):
-            # forbid changes to global variables
-            self.assert_no_global_change()
-        # check for standard output
-        if 'output' in kwargs:
-            self.assert_output(kwargs['output'])
-        # check for evaluation result, only valid if an expression is provided
-        if 'result' in kwargs:
-            if 'expression' in kwargs:
-                self.assert_result(kwargs['result'])
-            else:
-                raise GraderError("Vérification du résultat demandée, "
-                                  "mais pas d'expression fournie")
-
-    def parse_context_args(self, kwargs):
-        """
-        Parse context arguments to the `run()` method.
-
-        Currently allowed arguments are :
-        - globals: set global variables (erasing all others);
-        - inputs: set available input lines (erasing all others);
-        - argv: set available command-line arguments (erasing all others).
-
-        :param kwargs: Argument dictionary.
-        """
-        # set global variables (overwrites the whole global namespace)
-        if 'globals' in kwargs:
-            self.current_state = kwargs['globals']
-        # set available inputs
-        if 'inputs' in kwargs:
-            self.current_inputs = kwargs['inputs']
-        # set available program parameters (overrides sys.argv)
-        if 'argv' in kwargs:
-            self.argv = kwargs['argv']
-
-    def parse_description_args(self, kwargs):
-        """
-        Parse description arguments to the `run()` method.
-
-        Currently allowed arguments are :
-        - title: set test title;
-        - descr: set test description;
-        - hint: set hint in case of failure;
-        - weight: set test weight.
-
-        :param kwargs: Argument dictionary.
-        """
-        # set title
-        if 'title' in kwargs:
-            self.title = kwargs['title']
-        # set description
-        if 'descr' in kwargs:
-            self.descr = kwargs['descr']
-        # set hint
-        if 'hint' in kwargs:
-            self.hint = kwargs['hint']
-        # set weight
-        if 'weight' in kwargs:
-            self.weight = kwargs['weight']
+        # return result
+        return res
 
     """Assertions."""
-
-    @staticmethod
-    def _unidiff_output(expected, actual):
-        """
-        Helper function. Returns a string containing the unified diff of two
-        multiline strings. Thanks https://stackoverflow.com/a/845432/4206331
-        """
-
-        import difflib
-        expected = expected.splitlines(1)
-        actual = actual.splitlines(1)
-        diff = difflib.unified_diff(actual, expected,
-                                    fromfile='Affichage obtenu',
-                                    tofile='Affichage attendu')
-        return ''.join(diff)
-
-    def assert_defines_function(self, funcname):
-        """
-        Assert that the current session's contains a definition for a function
-        named `funcname`.
-
-        :param funcname: Function name.
-        :return: Assertion status.
-        """
-        status = self.session.get_analyzer().defines_function(funcname)
-        self.record_assertion(FunctionDefinitionAssert(status, funcname))
-        return status
-
-    def assert_output(self, expected: Any, cmp: Callable = operator.eq) -> bool:
-        """
-        Assert that the last run's output equals `expected` (using `cmp` as
-        comparison operator).
-
-        :param expected: Expected value of the output.
-        :param cmp: Output comparison function.
-        :return: Assertion status.
-        """
-        status = cmp(expected, self.output)
-        # diff = Test._unidiff_output(expected, self.output)
-        # self.record_assertion(OutputAssert(status, diff))
-        self.record_assertion(OutputAssert(status, expected))
-        return status
-
-    def assert_result(self, expected: Any, cmp: Callable = operator.eq) -> bool:
-        """
-        Assert that the last run's result equals `expected` (using `cmp` as
-        comparison operator).
-
-        :param expected: Expected value of the result.
-        :param cmp: Output comparison function.
-        :return: Assertion status.
-        """
-        status = cmp(expected, self.result)
-        if self.expression is None:
-            raise GraderError("No expression was evaluated")
-        self.record_assertion(ResultAssert(status, self.expression, expected))
-        return status
-
-    def assert_variable_values(self, cmp=operator.eq, **expected) -> bool:
-        """
-        Assert that the values of some variables after the last run equal
-        their values in the `expected` dictionary (using `cmp` as comparison
-        operator).
-
-        :param expected: Expected value of the variables.
-        :param cmp: Value comparison function.
-        :return: Assertion status.
-        """
-        if not expected:
-            raise ValueError("No expected variable values provided.")
-        state = self.current_state
-        missing = list(expected.keys() - state.keys())
-        incorrect = {var: state[var] for var in expected.keys() & state.keys()
-                     if not cmp(expected[var], state[var])}
-
-        status = not (missing or incorrect)
-        self.record_assertion(
-            VariableValuesAssert(status, expected, missing, incorrect))
-        return status
-
-    def assert_variable_types(self, cmp=operator.eq, **expected) -> bool:
-        """
-        Assert that the types of some variables after the last run equal
-        their values in the `expected` dictionary (using `cmp` as comparison
-        operator).
-
-        :param expected: Expected type of the variables.
-        :param cmp: Value comparison function.
-        :return: Assertion status.
-        """
-        if not expected:
-            raise ValueError("No expected variable types provided.")
-        state = self.current_state
-        missing = list(expected.keys() - state.keys())
-        incorrect = {var: state[var] for var in expected.keys() & state.keys()
-                     if not cmp(expected[var], type(state[var]))}
-
-        status = not (missing or incorrect)
-        self.record_assertion(
-            VariableTypesAssert(status, expected, missing, incorrect))
-        return status
-
-    def assert_no_global_change(self) -> bool:
-        """
-        Assert that no global variables changed during the last run.
-
-        :return: Assertion status.
-        """
-        added, deleted, modified, _ = self.summarize_changes()
-        status = not (added or deleted or modified)
-        self.record_assertion(NoGlobalChangeAssert(status))
-        return status
-
-    def assert_no_exception(self, **params) -> bool:
-        """
-        Assert that no exception was raised during the last run.
-
-        :return: Assertion status.
-        """
-        status = self.exception is None
-        self.record_assertion(NoExceptionAssert(status, self.exception,
-                                                **params))
-        return status
-
-    def assert_exception(self, exception_type: type(Exception)) -> bool:
-        """
-        Assert that an exception of type `exception_type` was raised during the
-        last run.
-
-        :return: Assertion status.
-        """
-        status = isinstance(self.exception, exception_type)
-        self.record_assertion(
-            ExceptionAssert(status, exception_type))
-        return status
-
-    def assert_no_loop(self, funcname: str,
-                       keywords: Tuple[str] = ("for", "while")):
-        analyzer = self.session.get_analyzer()
-        status = not analyzer.has_loop(funcname, keywords)
-        self.record_assertion(NoLoopAssert(status, funcname, keywords))
-        return status
-
-    def assert_recursion(self, expr: str):
-        call = eval("lambda: " + expr, self.current_state)
-        status = performs_recursion(call)
-        self.record_assertion(RecursionAssert(status, expr))
-        return status
-
-    def assert_returns_none(self, funcname: str):
-        a = self.session.get_analyzer()
-        status = a.returns_none(funcname)
-        self.record_assertion(NoReturnAssert(status, funcname))
-        return status
-
-    def assert_calls_function(self, caller: str, callee: str):
-        a = self.session.get_analyzer()
-        status = callee in a.calls_list(caller)
-        self.record_assertion(CallAssert(status, caller, callee))
-        return status
 
     def record_assertion(self, assertion: 'Assert') -> NoReturn:
         """
@@ -720,15 +730,12 @@ class Test:
         """
         self.assertions.append(assertion)
         self.status = self.status and assertion.status
-        self.fail_fast()
-
-    def fail_fast(self):
-        if self.params.get('fail_fast', False) and not self.status:
+        if self.params.get('test_fail_fast', False) and not self.status:
             raise StopGrader("Failed assert during fail-fast test")
 
     """Feedback"""
 
-    def context(self) -> str:
+    def describe_context(self) -> str:
         """
         Returns a HTML-formatted string describing a test's previous
         execution context.
@@ -741,7 +748,7 @@ class Test:
         res = []
 
         if self.previous_state:
-            tmp = ", ".join(self.previous_state)
+            tmp = ", ".join(self.previous_state.keys() - _excluded_globals)
             res.append(f"Variables globales : <code>{tmp}</code>")
         if self.previous_inputs:
             tmp = "\n".join(self.previous_inputs)
@@ -753,7 +760,7 @@ class Test:
         return "<br/>".join(res) if res else "Pas de variables globales, " \
                                              "entrées ni arguments"
 
-    def results(self) -> str:
+    def describe_results(self) -> str:
         """
         Returns a HTML-formatted string describing a test's effect.
 
@@ -764,7 +771,10 @@ class Test:
         :return: Full-text HTML formatted description of run effects.
         """
         res = []
-        added, deleted, modified, inputs = self.summarize_changes()
+        added, deleted, modified = _compare_namespaces(
+            self.previous_state, self.current_state)
+        n = len(self.previous_inputs) - len(self.current_inputs)
+        inputs = self.previous_inputs[:n]
 
         if self.expression is not None and self.result is not None:
             res.append("Résultat obtenu : <code>{}</code>".format(self.result))
@@ -780,8 +790,8 @@ class Test:
         if inputs:
             tmp = "<br/>\n".join(inputs)
             res.append(f"Lignes saisies : <code>{tmp}</code>")
-        if self.output:
-            tmp = self.output.replace('\n', "↲\n")
+        if self.stdout:
+            tmp = self.stdout.replace('\n', "↲\n")
             tmp = tmp.replace(' ', '⎵')
             res.append("Texte affiché : "
                        "<pre style='margin:3pt; padding:2pt; "
@@ -792,12 +802,6 @@ class Test:
                 type(self.exception).__name__, self.exception))
 
         return "<br/>".join(res) if res else "Aucun effet observable"
-
-    def set_default_title(self) -> NoReturn:
-        """
-        Sets default test title.
-        """
-        self.title = "Test {}".format(self.session.test_number)
 
     def get_grade(self):
         """
@@ -823,6 +827,9 @@ class Test:
         :return: Unique id of the form test_<number>
         """
         return 'test_' + str(self.number)
+
+    def set_default_title(self, expression):
+        self.title = f"Évaluation de l'expression <code>{expression}</code>"
 
 
 class TestGroup:
@@ -909,24 +916,6 @@ class TestGroup:
         self.status = self.status and status
 
 
-class TextLabel:
-
-    def __init__(self, text):
-        self.text = text
-
-    def render(self):
-        return self.text
-
-
-class Verbatim:
-
-    def __init__(self, code):
-        self.code = code
-
-    def render(self):
-        return "<code>{}</code>".format(self.code)
-
-
 class Assert:
     _num = 0
 
@@ -936,42 +925,6 @@ class Assert:
         self.status = status
         self.params = _default_params.copy()
         self.params.update(params)
-
-
-class OutputAssert(Assert):
-
-    def __init__(self, status, expected, **params):
-        super().__init__(status, params)
-        self.expected = expected
-
-    def __str__(self):
-        if self.status:
-            if self.expected == "":
-                return "Pas d'affichage"
-            else:
-                return "Affichage correct"
-        elif self.expected == "":
-            return "Aucun affichage attendu"
-        else:
-            tmp = self.expected.replace('\n', "↲\n")
-            tmp = tmp.replace(' ', '⎵')
-            return ("Affichage attendu :\n"
-                    "<pre style='margin:3pt; padding:2pt; "
-                    "background-color:black; color:white;'>\n"
-                    "{}</pre>".format(tmp))
-
-
-class NoExceptionAssert(Assert):
-
-    def __init__(self, status, exception=None, **params):
-        super().__init__(status, params)
-        self.exception = exception
-
-    def __str__(self):
-        if self.status:
-            return "Aucune exception levée"
-        else:
-            return "Une exception inattendue s'est produite"
 
 
 class ExceptionAssert(Assert):
@@ -988,21 +941,60 @@ class ExceptionAssert(Assert):
                    f"était attendue"
 
 
-class ResultAssert(Assert):
+class NoExceptionAssert(Assert):
 
-    def __init__(self, status, expression, expected, **params):
+    def __init__(self, status, exception=None, **params):
         super().__init__(status, params)
-        self.expression = expression
-        self.expected = expected
+        self.exception = exception
 
     def __str__(self):
         if self.status:
-            if self.expected:
+            return "Aucune exception levée"
+        else:
+            return "Une exception inattendue s'est produite"
+
+
+class ResultAssert(Assert):
+
+    def __init__(self, status, expression, expected, actual, **params):
+        super().__init__(status, params)
+        self.expression = expression
+        self.expected = expected
+        self.actual = actual
+
+    def __str__(self):
+        if self.status:
+            if self.expected is not ...:
                 return "Résultat correct"
             else:
                 return "Pas de résultat"
         else:
             return "Résultat attendu : <pre>{!r}</pre>".format(self.expected)
+
+
+class OutputAssert(Assert):
+
+    def __init__(self, status, expected, actual, **params):
+        super().__init__(status, params)
+        self.expected = expected
+        self.actual = actual
+
+    def __str__(self):
+        if self.status:
+            if self.expected == "":
+                return "Pas d'affichage"
+            else:
+                return "Affichage correct"
+        elif self.expected == "":
+            return "Aucun affichage attendu"
+        else:
+            # diff = _unidiff_output(self.expected, self.actual)
+            tmp = self.expected.replace('\n', "↲\n")
+            tmp = tmp.replace(' ', '⎵')
+            return ("Affichage attendu :\n"
+                    "<pre style='margin:3pt; padding:2pt; "
+                    "background-color:black; color:white;'>\n"
+                    "{}</pre>".format(tmp))
 
 
 class VariableValuesAssert(Assert):
@@ -1061,6 +1053,18 @@ class NoGlobalChangeAssert(Assert):
             return "Variables globales inchangées"
         else:
             return "Variables globales modifiées"
+
+
+class NoArgsChangeAssert(Assert):
+
+    def __init__(self, status, **params):
+        super().__init__(status, params)
+
+    def __str__(self):
+        if self.status:
+            return "Paramètres effectifs inchangés"
+        else:
+            return "Paramètres effectifs modifiés"
 
 
 class NoLoopAssert(Assert):

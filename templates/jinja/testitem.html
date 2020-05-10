@@ -26,20 +26,20 @@
                         {% endif %}
                         {% if test.executed or test.expression %}
                         <p>
-                            <emph>
+                            <b>
                                 Contexte d'exécution :
-                            </emph>
+                            </b>
                         </p>
                         <p>
-                            {{ test.context() }}
+                            {{ test.describe_context() }}
                         </p>
                         <p>
-                            <em>
+                            <b>
                                 Effets observés :
-                            </em>
+                            </b>
                         </p>
                         <p>
-                            {{ test.results() }}
+                            {{ test.describe_results() }}
                         </p>
                         {% endif %}
                         {% for assertion in test.assertions %}

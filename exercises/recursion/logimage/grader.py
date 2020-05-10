@@ -86,7 +86,8 @@ instances = [([], []), ([1], []),
              ([3], [0, 1, 1]), ([3], [1, 1, 0]),
              ([3], [1, 0, 1]), ([3], [1, 1, 1]),
              ([2], [1, 0, 1]), ([1, 2], [0, 0, 0]),
-             ([1, 1], [0, 1, 0])]
+             ([1, 1], [0, 1, 0]),
+             ([1, 1], [0, 0, 0])]
 
 begin_test('Respect des consignes')
 assert_defines_function("verifie")
@@ -103,7 +104,8 @@ begin_test_group('Question 3 - Fonction <code>coloriable</code>')
 begin_test('Respect des consignes')
 assert_defines_function("coloriable")
 
-instances_col = [([0, 0, 1], 0), ([0, 0, 1], 1), ([0, 0, 1], 2), ([0, 0, 1], 3)]
+instances_col = [([0, 0, 1], 0), ([0, 0, 1], 1),
+                 ([0, 0, 1], 2), ([0, 0, 1], 3), ([0, 0, 1], 4)]
 
 for rangee, k in instances_col:
     begin_test(f'Coloriable (test fixe)')
@@ -123,5 +125,3 @@ for contraintes, rangee in instances:
     evaluate(f'completable({contraintes}, {rangee})')
     assert_output('')
     assert_result(completable(contraintes, rangee))
-
-

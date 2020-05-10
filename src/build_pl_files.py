@@ -25,4 +25,5 @@ if __name__ == "__main__":
     with open("exercises/targets.txt") as fd:
         exlist = fd.read().strip().split('\n')
     for exercise_dir in exlist:
-        build_pl_file(exercise_dir)
+        if not exercise_dir.startswith('#'):
+            build_pl_file(exercise_dir)

@@ -110,4 +110,5 @@ if __name__ == "__main__":
     with open("exercises/targets.txt") as fd:
         exlist = fd.read().strip().split('\n')
     for exercise_dir in exlist:
-        test_exercise(exercise_dir)
+        if not exercise_dir.startswith('#'):
+            test_exercise(exercise_dir)
